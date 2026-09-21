@@ -1,6 +1,12 @@
+import argparse
 import os
 import sys
-import argparse
+
+# Centralized capture pipeline constants
+DOWNSAMPLE_SIZE = (128, 128)
+FRAME_CHANGE_THRESHOLD = 0.001  # 0.1% Mean Absolute Difference threshold
+CAPTURE_QUEUE_MAX_SIZE = 10     # Strict bounded queue size for 2 GB RAM target
+CAPTURE_INTERVAL_SECONDS = 3.0
 
 parser = argparse.ArgumentParser(description="OpenRecall")
 
@@ -17,7 +23,11 @@ parser.add_argument(
     default=False,
 )
 
-args = parser.parse_args()
+# Parse args safely with fallback when imported in test runners
+try:
+    args, _ = parser.parse_known_args()
+except Exception:
+    args = parser.parse_args([])
 
 
 def get_appdata_folder(app_name="openrecall"):
@@ -37,7 +47,7 @@ def get_appdata_folder(app_name="openrecall"):
     return path
 
 
-if args.storage_path:
+if args and args.storage_path:
     appdata_folder = args.storage_path
     screenshots_path = os.path.join(appdata_folder, "screenshots")
     db_path = os.path.join(appdata_folder, "recall.db")
@@ -49,5 +59,5 @@ else:
 if not os.path.exists(screenshots_path):
     try:
         os.makedirs(screenshots_path)
-    except:
+    except Exception:
         pass
