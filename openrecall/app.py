@@ -1,5 +1,7 @@
 """Flask web application and REST API for OpenRecall timeline and search UX."""
 
+import signal
+import sys
 from datetime import datetime, timezone
 from threading import Thread
 from typing import Dict, Any, List, Optional
@@ -15,9 +17,11 @@ from openrecall.database import (
     get_recent_entries,
     get_timeline_entries,
     get_timestamps,
+    reconcile_storage_and_database,
     search_entries,
 )
-from openrecall.screenshot import record_screenshots_thread
+from openrecall.maintenance import MaintenanceWorker
+from openrecall.screenshot import get_capture_pipeline, record_screenshots_thread
 from openrecall.utils import human_readable_time, timestamp_to_human_readable
 
 app = Flask(__name__)
@@ -561,6 +565,13 @@ def api_search():
     })
 
 
+@app.route("/api/health")
+def api_health():
+    """REST API endpoint returning application operational health metrics as JSON."""
+    pipeline = get_capture_pipeline()
+    return jsonify(pipeline.get_health_status())
+
+
 @app.route("/static/<filename>")
 def serve_image(filename):
     """Serves WebP screenshot files safely from the application screenshots directory."""
@@ -570,8 +581,32 @@ def serve_image(filename):
 def main():
     create_db()
     print(f"Appdata folder: {appdata_folder}")
-    t = Thread(target=record_screenshots_thread, daemon=True)
-    t.start()
+
+    # 1. Run startup storage maintenance & orphan reconciliation
+    print("Running startup storage reconciliation...")
+    reconcile_storage_and_database()
+
+    # 2. Start CapturePipeline
+    pipeline = get_capture_pipeline()
+    pipeline.start()
+
+    # 3. Start MaintenanceWorker
+    maintenance_worker = MaintenanceWorker(storage_lock=pipeline.storage_lock)
+    maintenance_worker.start()
+
+    # 4. Graceful OS signal handling (SIGINT, SIGTERM)
+    def signal_handler(sig, frame):
+        print("\nShutdown signal received. Stopping background threads gracefully...")
+        pipeline.stop(timeout=2.0)
+        maintenance_worker.stop(timeout=2.0)
+        sys.exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+    except (ValueError, AttributeError):
+        pass
+
     app.run(port=8082)
 
 

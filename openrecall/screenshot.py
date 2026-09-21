@@ -9,7 +9,7 @@ import os
 import queue
 import threading
 import time
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -133,7 +133,7 @@ def save_screenshot_image(
 
 class CapturePipeline:
 
-    """Managed capture pipeline with bounded worker queue and backpressure handling."""
+    """Managed capture pipeline with bounded worker queue, health monitoring, and self-healing recovery."""
 
     def __init__(
         self,
@@ -151,6 +151,15 @@ class CapturePipeline:
         self._consecutive_errors = 0
         self._last_error_log_time = 0.0
 
+        # Operational health & metrics
+        self.status = "stopped"
+        self.start_time: Optional[float] = None
+        self.captures_processed = 0
+        self.frames_dropped = 0
+        self.worker_restarts = 0
+        self.last_capture_timestamp: Optional[int] = None
+        self._restart_history: List[float] = []
+
     def pause(self) -> None:
         """Pauses capture pipeline and immediately clears any queued unprocessed frames."""
         self.privacy_policy.pause()
@@ -165,7 +174,7 @@ class CapturePipeline:
         return self.privacy_policy.is_paused()
 
     def clear_queue(self) -> None:
-        """Drains and discards all pending items from the processing queue."""
+        """Drains and discards all pending items from the processing queue, keeping task_done balanced."""
         while not self.queue.empty():
             try:
                 self.queue.get_nowait()
@@ -175,10 +184,12 @@ class CapturePipeline:
 
     def start(self) -> None:
         """Starts the capture and downstream worker background threads."""
-        if self._stop_event.is_set() or self._capture_thread is not None:
+        if self._capture_thread is not None and self._capture_thread.is_alive():
             return
 
         self._stop_event.clear()
+        self.status = "ok"
+        self.start_time = time.time()
         self._worker_thread = threading.Thread(
             target=self._processing_worker_loop, daemon=True, name="OpenRecall-Worker"
         )
@@ -192,13 +203,92 @@ class CapturePipeline:
     def stop(self, timeout: float = 2.0) -> None:
         """Stops capture and worker threads gracefully."""
         self._stop_event.set()
+        self.status = "stopped"
+
+        # Stop capture thread first so no new frames are pushed
         if self._capture_thread and self._capture_thread.is_alive():
             self._capture_thread.join(timeout=timeout)
+
+        # Allow worker thread bounded operational window to process remaining queue items
+        deadline = time.time() + timeout
+        while not self.queue.empty() and time.time() < deadline:
+            time.sleep(0.05)
+
+        # Cleanly drain any remaining items if worker timeout expired
+        self.clear_queue()
+
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=timeout)
+
         self._capture_thread = None
         self._worker_thread = None
         logger.info("CapturePipeline stopped.")
+
+    def get_health_status(self) -> Dict[str, Any]:
+        """Returns an operational health status summary."""
+        capture_alive = self._capture_thread is not None and self._capture_thread.is_alive()
+        worker_alive = self._worker_thread is not None and self._worker_thread.is_alive()
+
+        if self._stop_event.is_set() or (self._capture_thread is None and self._worker_thread is None):
+            current_status = "stopped"
+        elif not capture_alive or not worker_alive:
+            current_status = "degraded"
+        else:
+            current_status = self.status
+
+        uptime = round(time.time() - self.start_time, 1) if self.start_time else 0.0
+
+        return {
+            "status": current_status,
+            "uptime_seconds": uptime,
+            "capture_thread_alive": capture_alive,
+            "worker_thread_alive": worker_alive,
+            "queue_depth": self.queue.qsize(),
+            "captures_processed": self.captures_processed,
+            "frames_dropped": self.frames_dropped,
+            "worker_restarts": self.worker_restarts,
+            "last_capture_timestamp": self.last_capture_timestamp,
+        }
+
+    def _check_and_heal_workers(self) -> None:
+        """Monitors worker threads and heals/restarts them if unexpectedly dead."""
+        if self._stop_event.is_set():
+            return
+
+        now = time.time()
+        self._restart_history = [t for t in self._restart_history if now - t < 60.0]
+
+        # Check worker thread
+        if self._worker_thread is not None and not self._worker_thread.is_alive():
+            logger.error("Processing worker thread died unexpectedly.")
+            if len(self._restart_history) < 3:
+                self._restart_history.append(now)
+                self.worker_restarts += 1
+                logger.info(f"Self-healing: Restarting processing worker thread (attempt {len(self._restart_history)}/3)...")
+                time.sleep(min(2.0 ** len(self._restart_history), 4.0))
+                self._worker_thread = threading.Thread(
+                    target=self._processing_worker_loop, daemon=True, name="OpenRecall-Worker"
+                )
+                self._worker_thread.start()
+            else:
+                self.status = "degraded"
+                logger.error("Self-healing limit reached (3 restarts/60s). System status set to degraded.")
+
+        # Check capture thread
+        if self._capture_thread is not None and not self._capture_thread.is_alive():
+            logger.error("Capture loop thread died unexpectedly.")
+            if len(self._restart_history) < 3:
+                self._restart_history.append(now)
+                self.worker_restarts += 1
+                logger.info(f"Self-healing: Restarting capture loop thread (attempt {len(self._restart_history)}/3)...")
+                time.sleep(min(2.0 ** len(self._restart_history), 4.0))
+                self._capture_thread = threading.Thread(
+                    target=self._capture_loop, daemon=True, name="OpenRecall-Capture"
+                )
+                self._capture_thread.start()
+            else:
+                self.status = "degraded"
+                logger.error("Self-healing limit reached (3 restarts/60s). System status set to degraded.")
 
     def process_single_iteration(self) -> int:
         """Executes a single capture iteration with pause state checking."""
@@ -230,8 +320,19 @@ class CapturePipeline:
         changed_count = 0
         timestamp = int(time.time())
 
-        app_name = platform_provider.get_active_app_name() or "Unknown App"
-        window_title = platform_provider.get_active_window_title() or "Unknown Title"
+        # Guard platform active app name call independently
+        try:
+            app_name = platform_provider.get_active_app_name() or "Unknown App"
+        except Exception as app_err:
+            logger.warning(f"Failed to retrieve active app name: {app_err}")
+            app_name = "Unknown App"
+
+        # Guard platform active window title call independently
+        try:
+            window_title = platform_provider.get_active_window_title() or "Unknown Title"
+        except Exception as title_err:
+            logger.warning(f"Failed to retrieve active window title: {title_err}")
+            window_title = "Unknown Title"
 
         for idx, current_shot in enumerate(current_screenshots):
             last_shot = self.last_screenshots[idx]
@@ -245,11 +346,15 @@ class CapturePipeline:
                 try:
                     self.queue.put_nowait(item)
                     changed_count += 1
+                    self.last_capture_timestamp = timestamp
                 except queue.Full:
                     try:
-                        self.queue.get_nowait()  # Drop oldest frame
+                        dropped_item = self.queue.get_nowait()  # Drop oldest frame
+                        self.queue.task_done()                  # Immediately balance unfinished_tasks
+                        self.frames_dropped += 1
                         self.queue.put_nowait(item)
                         changed_count += 1
+                        self.last_capture_timestamp = timestamp
                         logger.warning("Capture queue full. Dropped oldest frame to prevent memory inflation.")
                     except queue.Empty:
                         pass
@@ -262,7 +367,8 @@ class CapturePipeline:
 
         while not self._stop_event.is_set():
             self.process_single_iteration()
-            time.sleep(CAPTURE_INTERVAL_SECONDS)
+            self._check_and_heal_workers()
+            self._stop_event.wait(timeout=CAPTURE_INTERVAL_SECONDS)
 
     def _processing_worker_loop(self) -> None:
         """Background worker thread processing queued frames (saving disk image and DB record)."""
@@ -308,12 +414,14 @@ class CapturePipeline:
                             image_path=filename,
                             monitor=monitor_idx + 1,
                         )
+                        self.captures_processed += 1
                     except Exception as db_err:
                         logger.error(f"Database insertion failed for screenshot {filename}: {db_err}")
             except Exception as e:
                 logger.error(f"Error processing frame item in worker loop: {e}")
             finally:
                 self.queue.task_done()
+
 
 
     def _handle_capture_error(self, err: Exception) -> None:
