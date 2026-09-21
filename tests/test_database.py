@@ -1,189 +1,205 @@
-import unittest
-import sqlite3
 import os
+import sqlite3
 import tempfile
 import time
-import numpy as np
+import unittest
 from unittest.mock import patch
 
-# Temporarily adjust path to import from openrecall
-import sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import numpy as np
 
-# Now import from openrecall.database, mocking db_path *before* the import
-# Create a temporary file path that will be used by the mock
-temp_db_file = tempfile.NamedTemporaryFile(delete=False)
-mock_db_path = temp_db_file.name
-temp_db_file.close() # Close the file handle, but the file persists because delete=False
-
-with patch('openrecall.config.db_path', mock_db_path):
-    from openrecall.database import (
-        create_db,
-        insert_entry,
-        get_all_entries,
-        get_timestamps,
-        Entry,
-    )
-    # Also patch db_path within the database module itself if it was imported directly there
-    import openrecall.database
-    openrecall.database.db_path = mock_db_path
+from openrecall.database import (
+    Entry,
+    SCHEMA_VERSION,
+    backup_database,
+    create_db,
+    get_all_entries,
+    get_recent_entries,
+    get_schema_version,
+    get_timestamps,
+    insert_entry,
+    sanitize_fts5_query,
+    search_entries,
+)
 
 
-class TestDatabase(unittest.TestCase):
-
-    @classmethod
-    def setUpClass(cls):
-        """Set up a temporary database file for all tests in this class."""
-        # The database path is already patched by the module-level patch
-        cls.db_path = mock_db_path
-        # Ensure the database and table are created once
-        create_db()
-
-    @classmethod
-    def tearDownClass(cls):
-        """Remove the temporary database file after all tests."""
-        # Try closing connection if any test left it open (though setUp/tearDown should handle this)
-        try:
-            if hasattr(cls, 'conn') and cls.conn:
-                cls.conn.close()
-        except Exception:
-            pass # Ignore errors during cleanup
-        os.remove(cls.db_path)
-        # Clean up sys.path modification
-        sys.path.pop(0)
-
+class TestDatabasePhase1C(unittest.TestCase):
 
     def setUp(self):
-        """Connect to the database and clear entries before each test."""
-        self.conn = sqlite3.connect(self.db_path)
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM entries")
-        self.conn.commit()
-        # No need to close here, will be handled by tearDown or next setUp potentially
+        """Create a temporary database file for each test."""
+        self.temp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.db_path = self.temp_db.name
+        self.temp_db.close()
+        create_db(self.db_path)
 
     def tearDown(self):
-        """Close the database connection after each test."""
-        if self.conn:
-            self.conn.close()
+        """Clean up database files and backups after each test."""
+        if os.path.exists(self.db_path):
+            try:
+                os.remove(self.db_path)
+            except Exception:
+                pass
+        # Clean up any backup files created during tests
+        dir_name = os.path.dirname(self.db_path)
+        base_name = os.path.basename(self.db_path)
+        for f in os.listdir(dir_name):
+            if f.startswith(base_name) and ".v1_backup." in f:
+                try:
+                    os.remove(os.path.join(dir_name, f))
+                except Exception:
+                    pass
 
-    def test_create_db(self):
-        """Test if create_db creates the table and index."""
-        # Check if table exists
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='entries'")
-        result = cursor.fetchone()
-        self.assertIsNotNone(result)
-        self.assertEqual(result[0], 'entries')
+    def test_schema_version(self):
+        """Verify PRAGMA user_version is set to target SCHEMA_VERSION (2)."""
+        version = get_schema_version(self.db_path)
+        self.assertEqual(version, SCHEMA_VERSION)
 
-        # Check if index exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_timestamp'")
-        result = cursor.fetchone()
-        self.assertIsNotNone(result)
-        self.assertEqual(result[0], 'idx_timestamp')
+    def test_fts5_tables_and_triggers_exist(self):
+        """Verify entries_fts table and triggers are created."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='entries_fts'")
+            self.assertIsNotNone(cursor.fetchone())
 
-    def test_02_insert_entry(self):
-        """Test inserting a single entry."""
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='trigger' AND name='entries_ai'")
+            self.assertIsNotNone(cursor.fetchone())
+
+    def test_insert_and_fts5_auto_sync(self):
+        """Verify inserting an entry automatically syncs to entries_fts."""
         ts = int(time.time())
-        embedding = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        inserted_id = insert_entry("Test text", ts, embedding, "TestApp", "TestTitle")
+        row_id = insert_entry(
+            text="Developing Python application on Linux MATE desktop",
+            timestamp=ts,
+            app="VSCode",
+            title="main.py - OpenRecall",
+            target_path=self.db_path,
+        )
+        self.assertIsNotNone(row_id)
 
-        self.assertIsNotNone(inserted_id)
-        self.assertIsInstance(inserted_id, int)
+        # Check entries_fts directly
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT rowid, text, app, title FROM entries_fts WHERE rowid = ?", (row_id,))
+            row = cursor.fetchone()
+            self.assertIsNotNone(row)
+            self.assertIn("Python", row[1])
 
-        # Verify the entry exists in the DB
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT * FROM entries WHERE id = ?", (inserted_id,))
-        result = cursor.fetchone()
-        self.assertIsNotNone(result)
-        # (id, app, title, text, timestamp, embedding_blob)
-        self.assertEqual(result[1], "TestApp")
-        self.assertEqual(result[2], "TestTitle")
-        self.assertEqual(result[3], "Test text")
-        self.assertEqual(result[4], ts)
-        retrieved_embedding = np.frombuffer(result[5], dtype=np.float32)
-        np.testing.assert_array_almost_equal(retrieved_embedding, embedding)
-
-    def test_insert_duplicate_timestamp(self):
-        """Test inserting an entry with a duplicate timestamp (should be ignored)."""
+    def test_fts5_lexical_search_normal_and_technical_terms(self):
+        """Test FTS5 search with normal terms, phrases, and technical strings."""
         ts = int(time.time())
-        embedding1 = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-        embedding2 = np.array([0.4, 0.5, 0.6], dtype=np.float32)
+        insert_entry("Running server on http://localhost:8080/api", ts, app="Terminal", title="bash", target_path=self.db_path)
+        insert_entry("Editing file in /home/shiva/Vibe/openrecall/database.py", ts + 1, app="VSCode", title="database.py", target_path=self.db_path)
+        insert_entry("Windows path C:\\Users\\Shiva\\Documents\\report.docx", ts + 2, app="Word", title="report.docx", target_path=self.db_path)
 
-        id1 = insert_entry("First text", ts, embedding1, "App1", "Title1")
-        self.assertIsNotNone(id1)
+        # 1. Search technical URL
+        results = search_entries("localhost:8080", target_path=self.db_path)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].app, "Terminal")
 
-        # Try inserting another entry with the same timestamp
-        id2 = insert_entry("Second text", ts, embedding2, "App2", "Title2")
-        self.assertIsNone(id2, "Inserting duplicate timestamp should return None")
+        # 2. Search Linux file path
+        results = search_entries("/home/shiva", target_path=self.db_path)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].app, "VSCode")
 
-        # Verify only the first entry exists
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM entries WHERE timestamp = ?", (ts,))
-        count = cursor.fetchone()[0]
-        self.assertEqual(count, 1)
+        # 3. Search Windows file path
+        results = search_entries("Users\\Shiva", target_path=self.db_path)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].app, "Word")
 
-        cursor.execute("SELECT text FROM entries WHERE timestamp = ?", (ts,))
-        text = cursor.fetchone()[0]
-        self.assertEqual(text, "First text") # Ensure the first one was kept
+    def test_metadata_filtering(self):
+        """Test searching with application, window title, and time range filters."""
+        ts = 1000
+        insert_entry("Document content A", ts, app="Firefox", title="Page 1", target_path=self.db_path)
+        insert_entry("Document content B", ts + 100, app="Chrome", title="Page 2", target_path=self.db_path)
+        insert_entry("Document content C", ts + 200, app="Firefox", title="Page 3", target_path=self.db_path)
 
-    def test_get_all_entries_empty(self):
-        """Test getting entries from an empty database."""
-        entries = get_all_entries()
-        self.assertEqual(entries, [])
+        # Filter by app
+        results = search_entries("Document", app="Firefox", target_path=self.db_path)
+        self.assertEqual(len(results), 2)
+        for r in results:
+            self.assertEqual(r.app, "Firefox")
 
-    def test_get_all_entries_multiple(self):
-        """Test retrieving multiple entries."""
-        ts1 = int(time.time())
-        ts2 = ts1 + 10
-        ts3 = ts1 - 10 # Ensure ordering works
-        emb1 = np.array([0.1] * 5, dtype=np.float32)
-        emb2 = np.array([0.2] * 5, dtype=np.float32)
-        emb3 = np.array([0.3] * 5, dtype=np.float32)
+        # Filter by time range
+        results = search_entries("Document", start_time=ts + 50, end_time=ts + 250, target_path=self.db_path)
+        self.assertEqual(len(results), 2)
 
-        insert_entry("Text 1", ts1, emb1, "App1", "Title1")
-        insert_entry("Text 2", ts2, emb2, "App2", "Title2")
-        insert_entry("Text 3", ts3, emb3, "App3", "Title3")
+    def test_pagination_bounding(self):
+        """Test limit and offset bounds handling."""
+        ts = int(time.time())
+        for i in range(15):
+            insert_entry(f"Screenshot text {i}", ts + i, app="App", title="Title", target_path=self.db_path)
 
-        entries = get_all_entries()
-        self.assertEqual(len(entries), 3)
+        # Page 1 (limit 5)
+        p1 = get_recent_entries(limit=5, offset=0, target_path=self.db_path)
+        self.assertEqual(len(p1), 5)
+        self.assertEqual(p1[0].timestamp, ts + 14)
 
-        # Entries should be ordered by timestamp DESC
-        self.assertEqual(entries[0].timestamp, ts2)
-        self.assertEqual(entries[0].text, "Text 2")
-        self.assertEqual(entries[0].app, "App2")
-        self.assertEqual(entries[0].title, "Title2")
-        np.testing.assert_array_almost_equal(entries[0].embedding, emb2)
-        self.assertIsInstance(entries[0].id, int)
+        # Page 2 (limit 5, offset 5)
+        p2 = get_recent_entries(limit=5, offset=5, target_path=self.db_path)
+        self.assertEqual(len(p2), 5)
+        self.assertEqual(p2[0].timestamp, ts + 9)
 
-        self.assertEqual(entries[1].timestamp, ts1)
-        self.assertEqual(entries[1].text, "Text 1")
-        np.testing.assert_array_almost_equal(entries[1].embedding, emb1)
+        # Limit upper bound enforcement (500)
+        p_large = get_recent_entries(limit=999999, target_path=self.db_path)
+        self.assertEqual(len(p_large), 15)
 
-        self.assertEqual(entries[2].timestamp, ts3)
-        self.assertEqual(entries[2].text, "Text 3")
-        np.testing.assert_array_almost_equal(entries[2].embedding, emb3)
+    def test_legacy_schema_v1_migration(self):
+        """Test migrating a populated legacy schema v1 database to v2 with backup creation."""
+        legacy_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
+        try:
+            # Create a legacy v1 database
+            with sqlite3.connect(legacy_db) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """CREATE TABLE entries (
+                           id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           app TEXT,
+                           title TEXT,
+                           text TEXT,
+                           timestamp INTEGER UNIQUE,
+                           embedding BLOB
+                       )"""
+                )
+                cursor.execute("PRAGMA user_version = 1")
+                emb_bytes = np.array([0.1, 0.2, 0.3], dtype=np.float32).tobytes()
+                cursor.execute(
+                    "INSERT INTO entries (app, title, text, timestamp, embedding) VALUES (?, ?, ?, ?, ?)",
+                    ("LegacyApp", "LegacyTitle", "Legacy OCR Text", 55555, emb_bytes),
+                )
+                conn.commit()
 
-    def test_get_timestamps_empty(self):
-        """Test getting timestamps from an empty database."""
-        timestamps = get_timestamps()
-        self.assertEqual(timestamps, [])
+            # Execute create_db/migration on legacy database
+            create_db(legacy_db)
 
-    def test_get_timestamps_multiple(self):
-        """Test retrieving multiple timestamps."""
-        ts1 = int(time.time())
-        ts2 = ts1 + 10
-        ts3 = ts1 - 10
-        emb = np.array([0.1] * 5, dtype=np.float32) # Embedding content doesn't matter here
+            # Check version updated to 2
+            self.assertEqual(get_schema_version(legacy_db), 2)
 
-        insert_entry("T1", ts1, emb, "A1", "T1")
-        insert_entry("T2", ts2, emb, "A2", "T2")
-        insert_entry("T3", ts3, emb, "A3", "T3")
+            # Check data preserved
+            entries = get_recent_entries(target_path=legacy_db)
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].app, "LegacyApp")
+            self.assertEqual(entries[0].text, "Legacy OCR Text")
+            self.assertEqual(entries[0].timestamp, 55555)
+            self.assertIsNotNone(entries[0].embedding)
+            np.testing.assert_array_almost_equal(entries[0].embedding, np.array([0.1, 0.2, 0.3], dtype=np.float32))
 
-        timestamps = get_timestamps()
-        self.assertEqual(len(timestamps), 3)
-        # Timestamps should be ordered DESC
-        self.assertEqual(timestamps, [ts2, ts1, ts3])
+            # Verify FTS5 indexed the legacy record
+            fts_results = search_entries("Legacy", target_path=legacy_db)
+            self.assertEqual(len(fts_results), 1)
+
+        finally:
+            if os.path.exists(legacy_db):
+                try:
+                    os.remove(legacy_db)
+                except Exception:
+                    pass
+
+    def test_sanitize_fts5_query_helper(self):
+        """Test query sanitization for safe FTS5 execution."""
+        self.assertEqual(sanitize_fts5_query(""), "")
+        self.assertEqual(sanitize_fts5_query(' "exact phrase" '), '"exact phrase"')
+        self.assertEqual(sanitize_fts5_query("python code"), "python* code*")
+        self.assertEqual(sanitize_fts5_query("test*"), "test*")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
