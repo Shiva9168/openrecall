@@ -5,14 +5,17 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from openrecall.config import parse_max_storage_gb
 from openrecall.database import (
     create_db,
     delete_entries_older_than,
     delete_entry_by_id,
     get_entry_by_id,
     get_recent_entries,
+    get_referenced_storage_bytes,
     insert_entry,
     search_entries,
+    trim_referenced_storage_to_capacity,
 )
 
 
@@ -206,6 +209,133 @@ class TestRetentionPhase2E1(unittest.TestCase):
         # Search after purge
         self.assertEqual(len(search_entries("alpha", target_path=self.db_path)), 1)
         self.assertEqual(len(search_entries("beta", target_path=self.db_path)), 0)
+
+
+class TestCapacityRetentionPhase2E2(unittest.TestCase):
+    """Test suite for Phase 2E.2 referenced storage accounting and capacity retention."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmp_dir.name, "test_recall.db")
+        self.img_dir = os.path.join(self.tmp_dir.name, "screenshots")
+        os.makedirs(self.img_dir, exist_ok=True)
+        create_db(self.db_path)
+
+    def tearDown(self):
+        self.tmp_dir.cleanup()
+
+    def _create_sample_file_of_size(self, filename: str, size_bytes: int) -> str:
+        filepath = os.path.join(self.img_dir, filename)
+        with open(filepath, "wb") as f:
+            f.write(b"X" * size_bytes)
+        return filename
+
+    def test_parse_max_storage_gb(self):
+        self.assertEqual(parse_max_storage_gb(None), 0)
+        self.assertEqual(parse_max_storage_gb(0.0), 0)
+        self.assertEqual(parse_max_storage_gb(5.0), 5_000_000_000)
+
+        with self.assertRaises(ValueError):
+            parse_max_storage_gb(-1.0)
+
+    def test_get_referenced_storage_bytes_accounting(self):
+        # Empty DB
+        self.assertEqual(get_referenced_storage_bytes(target_path=self.db_path, storage_dir=self.img_dir), 0)
+
+        # Create 2 referenced files of 1000 and 2000 bytes
+        f1 = self._create_sample_file_of_size("ref_1.webp", 1000)
+        f2 = self._create_sample_file_of_size("ref_2.webp", 2000)
+
+        insert_entry(text="t1", timestamp=100, image_path=f1, target_path=self.db_path)
+        insert_entry(text="t2", timestamp=200, image_path=f2, target_path=self.db_path)
+
+        # Create 1 orphan file (not in DB) of 5000 bytes
+        self._create_sample_file_of_size("orphan.webp", 5000)
+
+        # Create 1 active .tmp write file (not in DB) of 3000 bytes
+        self._create_sample_file_of_size("active.webp.tmp", 3000)
+
+        # get_referenced_storage_bytes MUST return exactly 3000 bytes (1000 + 2000)
+        total_ref = get_referenced_storage_bytes(target_path=self.db_path, storage_dir=self.img_dir)
+        self.assertEqual(total_ref, 3000)
+
+    def test_trim_referenced_storage_already_under_capacity(self):
+        f1 = self._create_sample_file_of_size("shot1.webp", 1000)
+        insert_entry(text="t1", timestamp=100, image_path=f1, target_path=self.db_path)
+
+        summary = trim_referenced_storage_to_capacity(
+            max_bytes=5000,
+            target_path=self.db_path,
+            storage_dir=self.img_dir,
+        )
+        self.assertEqual(summary["total_deleted_rows"], 0)
+        self.assertEqual(summary["total_deleted_files"], 0)
+        self.assertEqual(summary["final_referenced_bytes"], 1000)
+
+    def test_trim_referenced_storage_to_capacity_success(self):
+        # Create 5 entries, 1000 bytes each = 5000 bytes total referenced
+        for ts in [100, 200, 300, 400, 500]:
+            f = self._create_sample_file_of_size(f"cap_{ts}.webp", 1000)
+            insert_entry(text=f"Cap entry {ts}", timestamp=ts, image_path=f, target_path=self.db_path)
+
+        self.assertEqual(get_referenced_storage_bytes(target_path=self.db_path, storage_dir=self.img_dir), 5000)
+
+        # Target quota = 2000 bytes. Must delete 3 oldest entries (100, 200, 300) leaving 400 and 500.
+        summary = trim_referenced_storage_to_capacity(
+            max_bytes=2000,
+            batch_size=50,
+            target_path=self.db_path,
+            storage_dir=self.img_dir,
+        )
+
+        self.assertEqual(summary["total_deleted_rows"], 3)
+        self.assertEqual(summary["total_deleted_files"], 3)
+        self.assertEqual(summary["final_referenced_bytes"], 2000)
+
+        # Verify oldest entries (100, 200, 300) deleted, newest (400, 500) preserved
+        remaining = get_recent_entries(limit=100, target_path=self.db_path)
+        remaining_ts = sorted([r.timestamp for r in remaining])
+        self.assertEqual(remaining_ts, [400, 500])
+
+    def test_trim_referenced_storage_orphan_isolation(self):
+        """Crucial test: Verify capacity cleanup operates strictly on referenced storage.
+
+        Orphan files on disk must NOT cause extra valid referenced history to be deleted.
+        """
+        # Create 3 referenced entries (1000 bytes each = 3000 bytes referenced)
+        for ts in [100, 200, 300]:
+            f = self._create_sample_file_of_size(f"ref_{ts}.webp", 1000)
+            insert_entry(text=f"Ref {ts}", timestamp=ts, image_path=f, target_path=self.db_path)
+
+        # Create a huge orphan file of 50,000 bytes in screenshots/
+        self._create_sample_file_of_size("huge_orphan.webp", 50_000)
+
+        # Referenced storage = 3000 bytes. Set target quota = 2000 bytes.
+        # Trim should delete 1 oldest referenced entry (1000 bytes reclaimed -> 2000 bytes remaining) and STOP.
+        summary = trim_referenced_storage_to_capacity(
+            max_bytes=2000,
+            target_path=self.db_path,
+            storage_dir=self.img_dir,
+        )
+
+        self.assertEqual(summary["total_deleted_rows"], 1)
+        self.assertEqual(summary["final_referenced_bytes"], 2000)
+
+        # 2 referenced entries (200, 300) remain intact
+        remaining = get_recent_entries(limit=100, target_path=self.db_path)
+        self.assertEqual(sorted([r.timestamp for r in remaining]), [200, 300])
+
+    def test_trim_referenced_storage_disabled(self):
+        f = self._create_sample_file_of_size("shot.webp", 1000)
+        insert_entry(text="t1", timestamp=100, image_path=f, target_path=self.db_path)
+
+        # max_bytes = 0 (disabled)
+        summary = trim_referenced_storage_to_capacity(
+            max_bytes=0,
+            target_path=self.db_path,
+            storage_dir=self.img_dir,
+        )
+        self.assertEqual(summary["total_deleted_rows"], 0)
 
 
 if __name__ == "__main__":

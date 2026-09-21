@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+from typing import Optional
 
 # Centralized capture pipeline constants
 DOWNSAMPLE_SIZE = (128, 128)
@@ -12,6 +13,28 @@ CAPTURE_INTERVAL_SECONDS = 3.0
 OCR_ENGINE = "auto"
 OCR_MAX_DIMENSION = 1920        # Bounded max image dimension for OCR to limit CPU/RAM
 OCR_LANG = "eng"
+
+# Centralized storage capacity configuration defaults
+MAX_STORAGE_BYTES_DEFAULT: int = 0  # 0 = disabled / unlimited
+
+
+def parse_max_storage_gb(gb_val: Optional[float]) -> int:
+    """Parses a capacity limit in GB to integer bytes.
+
+    Args:
+        gb_val: Capacity limit in decimal Gigabytes (e.g. 5.0). None or 0.0 means disabled.
+
+    Returns:
+        Target capacity limit in integer bytes (0 = disabled).
+
+    Raises:
+        ValueError: If gb_val is negative.
+    """
+    if gb_val is None or gb_val == 0.0:
+        return 0
+    if gb_val < 0.0:
+        raise ValueError("Maximum storage capacity cannot be negative.")
+    return int(gb_val * 1_000_000_000)
 
 
 parser = argparse.ArgumentParser(description="OpenRecall")
@@ -27,6 +50,13 @@ parser.add_argument(
     action="store_true",
     help="Only record the primary monitor",
     default=False,
+)
+
+parser.add_argument(
+    "--max-storage-gb",
+    type=float,
+    default=None,
+    help="Maximum referenced screenshot storage limit in Gigabytes (e.g. 5.0). Default is 0 (disabled).",
 )
 
 # Parse args safely with fallback when imported in test runners

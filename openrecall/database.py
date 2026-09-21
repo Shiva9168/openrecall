@@ -715,3 +715,181 @@ def delete_entries_older_than(
     return summary
 
 
+def get_referenced_storage_bytes(
+    target_path: Optional[str] = None,
+    storage_dir: Optional[str] = None,
+) -> int:
+    """Calculates the total physical byte size of WebP files referenced by SQLite database entries.
+
+    Only WebP files referenced by valid `entries.image_path` rows in SQLite are measured.
+    Orphan WebP files, `.tmp` write files, and non-referenced files are ignored.
+    Missing files are skipped safely without raising errors.
+
+    Args:
+        target_path: SQLite database path override.
+        storage_dir: Screenshot storage directory path override.
+
+    Returns:
+        Total integer bytes of existing referenced WebP screenshot files.
+    """
+    path = target_path or db_path
+    base_dir = storage_dir or screenshots_path
+    total_bytes = 0
+
+    try:
+        with get_db_connection(path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT image_path FROM entries WHERE image_path IS NOT NULL AND image_path != ''")
+            rows = cursor.fetchall()
+            for row in rows:
+                img_path = row["image_path"]
+                full_path = img_path if os.path.isabs(img_path) else os.path.join(base_dir, img_path)
+                norm_path = os.path.normpath(full_path)
+                try:
+                    if os.path.exists(norm_path):
+                        total_bytes += os.path.getsize(norm_path)
+                except (OSError, PermissionError) as os_err:
+                    print(f"Warning: Stat error for referenced screenshot {norm_path}: {os_err}")
+    except sqlite3.Error as e:
+        print(f"Database error fetching referenced image paths: {e}")
+        raise
+
+    return total_bytes
+
+
+def trim_referenced_storage_to_capacity(
+    max_bytes: int,
+    batch_size: int = 50,
+    target_path: Optional[str] = None,
+    storage_dir: Optional[str] = None,
+) -> dict:
+    """Trims the oldest SQLite-backed screenshot entries until referenced storage is <= max_bytes.
+
+    Consistency Model:
+        Reuses Phase 2E.1 bounded transaction batching and deletion semantics.
+        For each batch:
+        1. Query candidate entries ordered by timestamp ASC.
+        2. Accumulate candidates until target bytes to reclaim are satisfied or batch_size is reached.
+        3. Delete the batch transactionally from SQLite (trigger updates FTS5 index).
+        4. Perform best-effort WebP file removal after DB commit.
+        5. Recalculate referenced storage and repeat until referenced_bytes <= max_bytes.
+
+    Args:
+        max_bytes: Target maximum capacity limit in bytes (must be > 0).
+        batch_size: Maximum number of records to delete per transaction batch (default: 50).
+        target_path: SQLite database path override.
+        storage_dir: Screenshot storage directory path override.
+
+    Returns:
+        Summary dict containing:
+        - "initial_referenced_bytes": Storage before trim
+        - "final_referenced_bytes": Storage after trim
+        - "target_capacity_bytes": Target max_bytes limit
+        - "total_deleted_rows": Total SQLite rows deleted
+        - "total_deleted_files": Total WebP files removed (or already missing)
+        - "failed_file_deletions": Count of filesystem deletion failures
+        - "batches_processed": Total batch transactions executed
+    """
+    path = target_path or db_path
+    base_dir = storage_dir or screenshots_path
+    safe_batch_size = max(1, min(batch_size, 500))
+
+    initial_referenced_bytes = get_referenced_storage_bytes(target_path=path, storage_dir=storage_dir)
+    current_referenced_bytes = initial_referenced_bytes
+
+    summary = {
+        "initial_referenced_bytes": initial_referenced_bytes,
+        "final_referenced_bytes": current_referenced_bytes,
+        "target_capacity_bytes": max_bytes,
+        "total_deleted_rows": 0,
+        "total_deleted_files": 0,
+        "failed_file_deletions": 0,
+        "batches_processed": 0,
+    }
+
+    if max_bytes <= 0 or current_referenced_bytes <= max_bytes:
+        return summary
+
+    while current_referenced_bytes > max_bytes:
+        bytes_to_reclaim = current_referenced_bytes - max_bytes
+
+        # Query candidate entries ordered by timestamp ASC
+        candidates = []
+        try:
+            with get_db_connection(path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """SELECT id, image_path FROM entries
+                       WHERE image_path IS NOT NULL AND image_path != ''
+                       ORDER BY timestamp ASC
+                       LIMIT ?""",
+                    (safe_batch_size * 2,),
+                )
+                candidates = cursor.fetchall()
+        except sqlite3.Error as e:
+            print(f"Database error selecting capacity deletion candidates: {e}")
+            break
+
+        if not candidates:
+            break
+
+        batch_ids = []
+        image_paths = []
+        accumulated_bytes = 0
+
+        for row in candidates:
+            e_id = row["id"]
+            img_path = row["image_path"]
+            batch_ids.append(e_id)
+            image_paths.append(img_path)
+
+            full_path = img_path if os.path.isabs(img_path) else os.path.join(base_dir, img_path)
+            norm_path = os.path.normpath(full_path)
+            try:
+                if os.path.exists(norm_path):
+                    accumulated_bytes += os.path.getsize(norm_path)
+            except (OSError, PermissionError):
+                pass
+
+            if accumulated_bytes >= bytes_to_reclaim or len(batch_ids) >= safe_batch_size:
+                break
+
+        if not batch_ids:
+            break
+
+        # Delete batch transactionally from SQLite
+        rows_affected = 0
+        try:
+            with get_db_connection(path) as conn:
+                cursor = conn.cursor()
+                placeholders = ",".join(["?"] * len(batch_ids))
+                cursor.execute(
+                    f"DELETE FROM entries WHERE id IN ({placeholders})",
+                    batch_ids,
+                )
+                conn.commit()
+                rows_affected = cursor.rowcount
+        except sqlite3.Error as e:
+            print(f"Database error deleting capacity batch: {e}")
+            break
+
+        if rows_affected <= 0:
+            break
+
+        summary["total_deleted_rows"] += rows_affected
+        summary["batches_processed"] += 1
+
+        # Best-effort filesystem cleanup AFTER commit
+        for img_path in image_paths:
+            if _safe_remove_image_file(img_path, storage_dir=storage_dir):
+                summary["total_deleted_files"] += 1
+            else:
+                summary["failed_file_deletions"] += 1
+
+        current_referenced_bytes = get_referenced_storage_bytes(target_path=path, storage_dir=storage_dir)
+
+    summary["final_referenced_bytes"] = current_referenced_bytes
+    return summary
+
+
+
