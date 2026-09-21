@@ -87,8 +87,8 @@ class TestDatabasePhase1C(unittest.TestCase):
         """Test FTS5 search with normal terms, phrases, and technical strings."""
         ts = int(time.time())
         insert_entry("Running server on http://localhost:8080/api", ts, app="Terminal", title="bash", target_path=self.db_path)
-        insert_entry("Editing file in /home/testuser/Vibe/openrecall/database.py", ts + 1, app="VSCode", title="database.py", target_path=self.db_path)
-        insert_entry("Windows path C:\\Users\\TestUser\\Documents\\report.docx", ts + 2, app="Word", title="report.docx", target_path=self.db_path)
+        insert_entry("Editing file in /home/shiva/Vibe/openrecall/database.py", ts + 1, app="VSCode", title="database.py", target_path=self.db_path)
+        insert_entry("Windows path C:\\Users\\Shiva\\Documents\\report.docx", ts + 2, app="Word", title="report.docx", target_path=self.db_path)
 
         # 1. Search technical URL
         results = search_entries("localhost:8080", target_path=self.db_path)
@@ -96,12 +96,12 @@ class TestDatabasePhase1C(unittest.TestCase):
         self.assertEqual(results[0].app, "Terminal")
 
         # 2. Search Linux file path
-        results = search_entries("/home/testuser", target_path=self.db_path)
+        results = search_entries("/home/shiva", target_path=self.db_path)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].app, "VSCode")
 
         # 3. Search Windows file path
-        results = search_entries("Users\\TestUser", target_path=self.db_path)
+        results = search_entries("Users\\Shiva", target_path=self.db_path)
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0].app, "Word")
 
