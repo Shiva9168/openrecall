@@ -14,7 +14,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from openrecall.config import db_path
+from openrecall.config import db_path, screenshots_path
 
 SCHEMA_VERSION = 2
 
@@ -527,4 +527,191 @@ def get_timeline_entries(
     except sqlite3.Error as e:
         print(f"Database error during timeline fetch: {e}")
     return entries
+
+
+def _safe_remove_image_file(
+    image_path: Optional[str],
+    storage_dir: Optional[str] = None
+) -> bool:
+    """Attempts best-effort removal of a WebP screenshot file from disk.
+
+    Consistency Model:
+        SQLite deletion is transactional. Filesystem deletion occurs after commit and is best-effort.
+        Failed filesystem deletion may leave an orphan file for future reconciliation.
+
+    Args:
+        image_path: The relative or absolute image filename stored in the database entry.
+        storage_dir: Target directory path override for testing or custom storage locations.
+
+    Returns:
+        True if the file was removed or was already missing.
+        False if file deletion failed due to an OS/permission error.
+    """
+    if not image_path:
+        return True
+
+    base_dir = storage_dir or screenshots_path
+    full_path = image_path if os.path.isabs(image_path) else os.path.join(base_dir, image_path)
+    norm_path = os.path.normpath(full_path)
+
+    if not os.path.exists(norm_path):
+        return True
+
+    try:
+        os.remove(norm_path)
+        return True
+    except Exception as e:
+        print(f"Warning: Filesystem removal failed for {norm_path}: {e}")
+        return False
+
+
+def delete_entry_by_id(
+    entry_id: int,
+    target_path: Optional[str] = None,
+    storage_dir: Optional[str] = None,
+) -> bool:
+    """Deletes a single screenshot entry by database ID.
+
+    Consistency Model:
+        SQLite deletion is transactional. The SQLite row is deleted inside a transaction,
+        letting the SQLite `entries_ad` trigger synchronize the FTS5 search index.
+        Filesystem cleanup happens AFTER commit and is best-effort. If file deletion fails,
+        the database row remains deleted (not restored), leaving an orphan file for future
+        reconciliation. Repeated calls for an already deleted entry return False deterministically.
+
+    Args:
+        entry_id: Integer database ID of the entry to delete.
+        target_path: SQLite database path override.
+        storage_dir: Screenshot storage directory path override.
+
+    Returns:
+        True if the database entry was found and deleted, False if no entry existed for ID.
+    """
+    path = target_path or db_path
+
+    # Step 1: Retrieve entry metadata (specifically image_path) before deleting
+    entry = get_entry_by_id(entry_id, target_path=path)
+    if not entry:
+        return False
+
+    # Step 2: Delete SQLite row inside a transaction (trigger entries_ad updates FTS5)
+    row_deleted = False
+    try:
+        with get_db_connection(path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
+            conn.commit()
+            if cursor.rowcount > 0:
+                row_deleted = True
+    except sqlite3.Error as e:
+        print(f"Database error deleting entry ID {entry_id}: {e}")
+        return False
+
+    if not row_deleted:
+        return False
+
+    # Step 3: Best-effort filesystem cleanup AFTER commit
+    _safe_remove_image_file(entry.image_path, storage_dir=storage_dir)
+
+    return True
+
+
+def delete_entries_older_than(
+    cutoff_timestamp: int,
+    batch_size: int = 50,
+    target_path: Optional[str] = None,
+    storage_dir: Optional[str] = None,
+) -> dict:
+    """Deletes all screenshot entries with timestamp strictly less than cutoff_timestamp.
+
+    Cutoff Semantics:
+        Entries with `timestamp < cutoff_timestamp` are eligible for deletion.
+        Entries with `timestamp >= cutoff_timestamp` (including exact matches) are preserved.
+
+    Consistency Model:
+        Processes records in bounded transaction batches (`batch_size`).
+        For each batch:
+        1. Query up to `batch_size` matching IDs and `image_path` values ordered by timestamp ASC.
+        2. Delete the batch transactionally from SQLite (trigger updates FTS5 index).
+        3. Perform best-effort filesystem cleanup for image files after DB commit.
+        4. Repeat until no eligible entries remain.
+
+    Args:
+        cutoff_timestamp: Epoch seconds cutoff threshold (`timestamp < cutoff_timestamp`).
+        batch_size: Number of records to delete per transaction batch (default: 50).
+        target_path: SQLite database path override.
+        storage_dir: Screenshot storage directory path override.
+
+    Returns:
+        Summary dict containing:
+        - "total_deleted_rows": Total SQLite rows deleted
+        - "total_deleted_files": Total WebP image files successfully deleted (or already missing)
+        - "failed_file_deletions": Count of filesystem deletion failures
+        - "batches_processed": Total batch transactions executed
+    """
+    path = target_path or db_path
+    safe_batch_size = max(1, min(batch_size, 500))
+
+    summary = {
+        "total_deleted_rows": 0,
+        "total_deleted_files": 0,
+        "failed_file_deletions": 0,
+        "batches_processed": 0,
+    }
+
+    while True:
+        # Step 1: Select up to safe_batch_size eligible entry IDs and image_paths
+        batch_items = []
+        try:
+            with get_db_connection(path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """SELECT id, image_path FROM entries
+                       WHERE timestamp < ?
+                       ORDER BY timestamp ASC
+                       LIMIT ?""",
+                    (cutoff_timestamp, safe_batch_size),
+                )
+                batch_items = cursor.fetchall()
+        except sqlite3.Error as e:
+            print(f"Database error selecting retention batch: {e}")
+            break
+
+        if not batch_items:
+            break  # No eligible entries left
+
+        batch_ids = [item["id"] for item in batch_items]
+        image_paths = [item["image_path"] for item in batch_items]
+
+        # Step 2: Delete batch transactionally from SQLite
+        rows_affected = 0
+        try:
+            with get_db_connection(path) as conn:
+                cursor = conn.cursor()
+                placeholders = ",".join(["?"] * len(batch_ids))
+                cursor.execute(
+                    f"DELETE FROM entries WHERE id IN ({placeholders})",
+                    batch_ids,
+                )
+                conn.commit()
+                rows_affected = cursor.rowcount
+        except sqlite3.Error as e:
+            print(f"Database error deleting retention batch: {e}")
+            break
+
+        if rows_affected <= 0:
+            break
+
+        summary["total_deleted_rows"] += rows_affected
+        summary["batches_processed"] += 1
+
+        # Step 3: Best-effort filesystem cleanup AFTER commit
+        for img_path in image_paths:
+            if _safe_remove_image_file(img_path, storage_dir=storage_dir):
+                summary["total_deleted_files"] += 1
+            else:
+                summary["failed_file_deletions"] += 1
+
+    return summary
+
 
