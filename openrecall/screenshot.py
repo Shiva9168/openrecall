@@ -26,6 +26,11 @@ from openrecall.database import insert_entry
 from openrecall.nlp import get_embedding
 from openrecall.ocr import extract_text_from_image
 from openrecall.platform import MSSScreenCaptureProvider, get_platform_provider
+from openrecall.privacy import (
+    PrivacyPolicy,
+    get_privacy_policy,
+    log_privacy_pause,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,8 +135,13 @@ class CapturePipeline:
 
     """Managed capture pipeline with bounded worker queue and backpressure handling."""
 
-    def __init__(self, max_queue_size: int = CAPTURE_QUEUE_MAX_SIZE):
+    def __init__(
+        self,
+        max_queue_size: int = CAPTURE_QUEUE_MAX_SIZE,
+        privacy_policy: Optional[PrivacyPolicy] = None,
+    ):
         self.max_queue_size = max_queue_size
+        self.privacy_policy = privacy_policy or get_privacy_policy()
         self.queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
         self.last_screenshots: List[np.ndarray] = []
         self._stop_event = threading.Event()
@@ -139,6 +149,28 @@ class CapturePipeline:
         self._worker_thread: Optional[threading.Thread] = None
         self._consecutive_errors = 0
         self._last_error_log_time = 0.0
+
+    def pause(self) -> None:
+        """Pauses capture pipeline and immediately clears any queued unprocessed frames."""
+        self.privacy_policy.pause()
+        self.clear_queue()
+
+    def resume(self) -> None:
+        """Resumes capture pipeline."""
+        self.privacy_policy.resume()
+
+    def is_paused(self) -> bool:
+        """Returns True if capture pipeline is currently paused."""
+        return self.privacy_policy.is_paused()
+
+    def clear_queue(self) -> None:
+        """Drains and discards all pending items from the processing queue."""
+        while not self.queue.empty():
+            try:
+                self.queue.get_nowait()
+                self.queue.task_done()
+            except queue.Empty:
+                break
 
     def start(self) -> None:
         """Starts the capture and downstream worker background threads."""
@@ -168,11 +200,16 @@ class CapturePipeline:
         logger.info("CapturePipeline stopped.")
 
     def process_single_iteration(self) -> int:
-        """Executes a single capture iteration (useful for testing and manual polling)."""
+        """Executes a single capture iteration with pause state checking."""
 
         platform_provider = get_platform_provider()
 
         if not platform_provider.is_user_active():
+            return 0
+
+        # Early pause check before screenshot capture
+        if self.privacy_policy.is_paused():
+            log_privacy_pause()
             return 0
 
         try:
@@ -192,15 +229,15 @@ class CapturePipeline:
         changed_count = 0
         timestamp = int(time.time())
 
+        app_name = platform_provider.get_active_app_name() or "Unknown App"
+        window_title = platform_provider.get_active_window_title() or "Unknown Title"
+
         for idx, current_shot in enumerate(current_screenshots):
             last_shot = self.last_screenshots[idx]
             diff = compute_frame_difference(current_shot, last_shot)
 
             if diff >= FRAME_CHANGE_THRESHOLD:
                 self.last_screenshots[idx] = current_shot
-                app_name = platform_provider.get_active_app_name() or "Unknown App"
-                window_title = platform_provider.get_active_window_title() or "Unknown Title"
-
                 item = (timestamp, idx, current_shot, app_name, window_title)
 
                 # Bounded queue backpressure policy: if queue is full, drop oldest item
@@ -236,6 +273,11 @@ class CapturePipeline:
                 continue
 
             try:
+                # Discard queued items if capture is paused
+                if self.privacy_policy.is_paused():
+                    log_privacy_pause()
+                    continue
+
                 timestamp, monitor_idx, shot_array, app_name, window_title = item
                 filename = f"{timestamp}_{monitor_idx}.webp"
                 filepath = os.path.normpath(os.path.join(screenshots_path, filename))
