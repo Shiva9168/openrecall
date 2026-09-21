@@ -1,7 +1,8 @@
 """Flask web application and REST API for OpenRecall timeline and search UX."""
 
+from datetime import datetime, timezone
 from threading import Thread
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from flask import Flask, jsonify, render_template_string, request, send_from_directory
 from jinja2 import BaseLoader
@@ -9,6 +10,8 @@ from jinja2 import BaseLoader
 from openrecall.config import appdata_folder, screenshots_path
 from openrecall.database import (
     create_db,
+    get_all_entries,
+    get_available_apps,
     get_recent_entries,
     get_timeline_entries,
     get_timestamps,
@@ -37,6 +40,7 @@ base_template = """
     .timeline-card { transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out; border-radius: 8px; overflow: hidden; }
     .timeline-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
     .badge-app { background-color: #e9ecef; color: #495057; font-weight: 500; }
+    .badge-monitor { background-color: #d1ecf1; color: #0c5460; font-weight: 500; }
     .text-snippet { font-size: 0.85rem; color: #6c757d; max-height: 3.6em; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
     .modal-img { max-height: 80vh; object-fit: contain; }
   </style>
@@ -98,6 +102,22 @@ def _get_pagination_params() -> tuple[int, int, int]:
     return page, limit, offset
 
 
+def _parse_date_to_timestamp(date_str: Optional[str], end_of_day: bool = False) -> Optional[int]:
+    """Parses an HTML <input type="date"> string (YYYY-MM-DD) to a system Unix timestamp."""
+    if not date_str or not date_str.strip():
+        return None
+    try:
+        dt = datetime.strptime(date_str.strip(), "%Y-%m-%d")
+        if end_of_day:
+            dt = dt.replace(hour=23, minute=59, second=59)
+        else:
+            dt = dt.replace(hour=0, minute=0, second=0)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+
+
 def _entry_to_dict(entry) -> Dict[str, Any]:
     """Serializes a database Entry into a clean JSON-friendly dictionary."""
     text_val = entry.text or ""
@@ -117,12 +137,20 @@ def _entry_to_dict(entry) -> Dict[str, Any]:
 
 @app.route("/")
 def timeline():
-    """Renders the paginated timeline history view."""
+    """Renders the paginated timeline history view with filter controls."""
     page, limit, offset = _get_pagination_params()
     app_filter = request.args.get("app")
     title_filter = request.args.get("title")
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
 
+    start_ts = _parse_date_to_timestamp(start_date, end_of_day=False)
+    end_ts = _parse_date_to_timestamp(end_date, end_of_day=True)
+
+    available_apps = get_available_apps()
     entries = get_timeline_entries(
+        start_time=start_ts,
+        end_time=end_ts,
         app=app_filter,
         title=title_filter,
         limit=limit,
@@ -133,16 +161,40 @@ def timeline():
         """
 {% extends "base_template" %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="d-flex justify-content-between align-items-center mb-3">
   <h4 class="mb-0 font-weight-bold">Timeline History</h4>
   <span class="text-muted small">Showing page {{ page }} ({{ entries|length }} items)</span>
 </div>
+
+<!-- Filter Bar -->
+<form method="get" action="/" class="card card-body bg-white shadow-sm mb-4 p-3 border-0">
+  <div class="form-row align-items-center">
+    <div class="col-12 col-md-3 mb-2 mb-md-0">
+      <select class="custom-select" name="app">
+        <option value="">All Applications</option>
+        {% for a in available_apps %}
+          <option value="{{ a }}" {% if request.args.get('app') == a %}selected{% endif %}>{{ a }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-6 col-md-3 mb-2 mb-md-0">
+      <input type="date" class="form-control" name="start_date" value="{{ request.args.get('start_date', '') }}" placeholder="From Date">
+    </div>
+    <div class="col-6 col-md-3 mb-2 mb-md-0">
+      <input type="date" class="form-control" name="end_date" value="{{ request.args.get('end_date', '') }}" placeholder="To Date">
+    </div>
+    <div class="col-12 col-md-3 d-flex">
+      <button type="submit" class="btn btn-primary flex-grow-1 mr-2"><i class="bi bi-funnel"></i> Filter</button>
+      <a href="/" class="btn btn-outline-secondary">Reset</a>
+    </div>
+  </div>
+</form>
 
 {% if entries|length > 0 %}
   <div class="row">
     {% for entry in entries %}
       <div class="col-12 col-md-6 col-lg-4 mb-4">
-        <div class="card timeline-card h-100 bg-white">
+        <div class="card timeline-card h-100 bg-white border-0 shadow-sm">
           <a href="#" data-toggle="modal" data-target="#modal-{{ loop.index0 }}">
             <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
           </a>
@@ -150,7 +202,10 @@ def timeline():
             <div>
               <div class="d-flex justify-content-between align-items-center mb-1">
                 <span class="badge badge-app text-truncate" style="max-width: 140px;">{{ entry.app or 'Unknown App' }}</span>
-                <span class="text-muted small">{{ entry.timestamp | timestamp_to_human_readable }}</span>
+                {% if entry.monitor and entry.monitor > 1 %}
+                  <span class="badge badge-monitor ml-1">Mon {{ entry.monitor }}</span>
+                {% endif %}
+                <span class="text-muted small ml-auto">{{ entry.timestamp | timestamp_to_human_readable }}</span>
               </div>
               <h6 class="card-title text-truncate mb-2" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</h6>
               {% if entry.text %}
@@ -193,7 +248,7 @@ def timeline():
     <ul class="pagination justify-content-center">
       {% if page > 1 %}
         <li class="page-item">
-          <a class="page-link" href="/?page={{ page - 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}">Previous</a>
+          <a class="page-link" href="/?page={{ page - 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Previous</a>
         </li>
       {% else %}
         <li class="page-item disabled"><span class="page-link">Previous</span></li>
@@ -201,7 +256,7 @@ def timeline():
       <li class="page-item active"><span class="page-link">{{ page }}</span></li>
       {% if entries|length == limit %}
         <li class="page-item">
-          <a class="page-link" href="/?page={{ page + 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}">Next</a>
+          <a class="page-link" href="/?page={{ page + 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Next</a>
         </li>
       {% else %}
         <li class="page-item disabled"><span class="page-link">Next</span></li>
@@ -210,15 +265,16 @@ def timeline():
   </nav>
 
 {% else %}
-  <div class="alert alert-info py-4 text-center" role="alert">
+  <div class="alert alert-info py-4 text-center border-0 shadow-sm" role="alert">
     <i class="bi bi-info-circle display-4 d-block mb-2 text-info"></i>
     <h5 class="alert-heading">No timeline records found</h5>
-    <p class="mb-0">No desktop screen captures have been recorded yet or match your active filter.</p>
+    <p class="mb-0">No desktop screen captures match your active filters.</p>
   </div>
 {% endif %}
 {% endblock %}
 """,
         entries=entries,
+        available_apps=available_apps,
         page=page,
         limit=limit,
     )
@@ -226,16 +282,24 @@ def timeline():
 
 @app.route("/search")
 def search():
-    """Renders the paginated search results view."""
+    """Renders the paginated search results view with filter controls."""
     q = request.args.get("q", "")
     page, limit, offset = _get_pagination_params()
     app_filter = request.args.get("app")
     title_filter = request.args.get("title")
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
 
+    start_ts = _parse_date_to_timestamp(start_date, end_of_day=False)
+    end_ts = _parse_date_to_timestamp(end_date, end_of_day=True)
+
+    available_apps = get_available_apps()
     matching_entries = search_entries(
         query=q,
         app=app_filter,
         title=title_filter,
+        start_time=start_ts,
+        end_time=end_ts,
         limit=limit,
         offset=offset,
     )
@@ -244,18 +308,43 @@ def search():
         """
 {% extends "base_template" %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="d-flex justify-content-between align-items-center mb-3">
   <h4 class="mb-0 font-weight-bold">
     {% if q %}Search Results for &ldquo;{{ q }}&rdquo;{% else %}Search All Records{% endif %}
   </h4>
   <span class="text-muted small">Page {{ page }} ({{ entries|length }} matches)</span>
 </div>
 
+<!-- Filter Bar -->
+<form method="get" action="/search" class="card card-body bg-white shadow-sm mb-4 p-3 border-0">
+  <input type="hidden" name="q" value="{{ q }}">
+  <div class="form-row align-items-center">
+    <div class="col-12 col-md-3 mb-2 mb-md-0">
+      <select class="custom-select" name="app">
+        <option value="">All Applications</option>
+        {% for a in available_apps %}
+          <option value="{{ a }}" {% if request.args.get('app') == a %}selected{% endif %}>{{ a }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-6 col-md-3 mb-2 mb-md-0">
+      <input type="date" class="form-control" name="start_date" value="{{ request.args.get('start_date', '') }}" placeholder="From Date">
+    </div>
+    <div class="col-6 col-md-3 mb-2 mb-md-0">
+      <input type="date" class="form-control" name="end_date" value="{{ request.args.get('end_date', '') }}" placeholder="To Date">
+    </div>
+    <div class="col-12 col-md-3 d-flex">
+      <button type="submit" class="btn btn-primary flex-grow-1 mr-2"><i class="bi bi-funnel"></i> Filter</button>
+      <a href="/search?q={{ q }}" class="btn btn-outline-secondary">Reset</a>
+    </div>
+  </div>
+</form>
+
 {% if entries|length > 0 %}
   <div class="row">
     {% for entry in entries %}
       <div class="col-12 col-md-6 col-lg-4 mb-4">
-        <div class="card timeline-card h-100 bg-white">
+        <div class="card timeline-card h-100 bg-white border-0 shadow-sm">
           <a href="#" data-toggle="modal" data-target="#modal-search-{{ loop.index0 }}">
             <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
           </a>
@@ -263,7 +352,10 @@ def search():
             <div>
               <div class="d-flex justify-content-between align-items-center mb-1">
                 <span class="badge badge-app text-truncate" style="max-width: 140px;">{{ entry.app or 'Unknown App' }}</span>
-                <span class="text-muted small">{{ entry.timestamp | timestamp_to_human_readable }}</span>
+                {% if entry.monitor and entry.monitor > 1 %}
+                  <span class="badge badge-monitor ml-1">Mon {{ entry.monitor }}</span>
+                {% endif %}
+                <span class="text-muted small ml-auto">{{ entry.timestamp | timestamp_to_human_readable }}</span>
               </div>
               <h6 class="card-title text-truncate mb-2" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</h6>
               {% if entry.text %}
@@ -306,7 +398,7 @@ def search():
     <ul class="pagination justify-content-center">
       {% if page > 1 %}
         <li class="page-item">
-          <a class="page-link" href="/search?q={{ q }}&page={{ page - 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}">Previous</a>
+          <a class="page-link" href="/search?q={{ q }}&page={{ page - 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Previous</a>
         </li>
       {% else %}
         <li class="page-item disabled"><span class="page-link">Previous</span></li>
@@ -314,7 +406,7 @@ def search():
       <li class="page-item active"><span class="page-link">{{ page }}</span></li>
       {% if entries|length == limit %}
         <li class="page-item">
-          <a class="page-link" href="/search?q={{ q }}&page={{ page + 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}">Next</a>
+          <a class="page-link" href="/search?q={{ q }}&page={{ page + 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Next</a>
         </li>
       {% else %}
         <li class="page-item disabled"><span class="page-link">Next</span></li>
@@ -323,7 +415,7 @@ def search():
   </nav>
 
 {% else %}
-  <div class="alert alert-warning py-4 text-center" role="alert">
+  <div class="alert alert-warning py-4 text-center border-0 shadow-sm" role="alert">
     <i class="bi bi-exclamation-triangle display-4 d-block mb-2 text-warning"></i>
     <h5 class="alert-heading">No matching memory records</h5>
     <p class="mb-0">No records match your search query &ldquo;{{ q }}&rdquo;.</p>
@@ -332,6 +424,7 @@ def search():
 {% endblock %}
 """,
         entries=matching_entries,
+        available_apps=available_apps,
         q=q,
         page=page,
         limit=limit,
@@ -340,12 +433,19 @@ def search():
 
 @app.route("/api/timeline")
 def api_timeline():
-    """REST API endpoint returning paginated timeline history as JSON."""
+    """REST API endpoint returning paginated timeline history as JSON with filter support."""
     page, limit, offset = _get_pagination_params()
     app_filter = request.args.get("app")
     title_filter = request.args.get("title")
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+
+    start_ts = _parse_date_to_timestamp(start_date, end_of_day=False)
+    end_ts = _parse_date_to_timestamp(end_date, end_of_day=True)
 
     entries = get_timeline_entries(
+        start_time=start_ts,
+        end_time=end_ts,
         app=app_filter,
         title=title_filter,
         limit=limit,
@@ -363,16 +463,23 @@ def api_timeline():
 
 @app.route("/api/search")
 def api_search():
-    """REST API endpoint returning paginated search results as JSON."""
+    """REST API endpoint returning paginated search results as JSON with filter support."""
     q = request.args.get("q", "")
     page, limit, offset = _get_pagination_params()
     app_filter = request.args.get("app")
     title_filter = request.args.get("title")
+    start_date = request.args.get("start_date")
+    end_date = request.args.get("end_date")
+
+    start_ts = _parse_date_to_timestamp(start_date, end_of_day=False)
+    end_ts = _parse_date_to_timestamp(end_date, end_of_day=True)
 
     entries = search_entries(
         query=q,
         app=app_filter,
         title=title_filter,
+        start_time=start_ts,
+        end_time=end_ts,
         limit=limit,
         offset=offset,
     )

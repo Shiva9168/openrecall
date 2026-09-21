@@ -200,6 +200,19 @@ class TestDatabasePhase1C(unittest.TestCase):
         self.assertEqual(sanitize_fts5_query("python code"), "python* code*")
         self.assertEqual(sanitize_fts5_query("test*"), "test*")
 
+    def test_get_available_apps(self):
+        """Test retrieving unique sorted application names from the database."""
+        from openrecall.database import get_available_apps
+
+        ts = int(time.time())
+        insert_entry("Doc 1", ts, app="VSCode", target_path=self.db_path)
+        insert_entry("Doc 2", ts + 1, app="Firefox", target_path=self.db_path)
+        insert_entry("Doc 3", ts + 2, app="VSCode", target_path=self.db_path)
+        insert_entry("Doc 4", ts + 3, app="Terminal", target_path=self.db_path)
+
+        apps = get_available_apps(target_path=self.db_path)
+        self.assertEqual(apps, ["Firefox", "Terminal", "VSCode"])
+
 
 if __name__ == "__main__":
     unittest.main()

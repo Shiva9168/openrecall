@@ -344,6 +344,25 @@ def get_timestamps(
     return timestamps
 
 
+def get_available_apps(target_path: Optional[str] = None) -> List[str]:
+    """Retrieves a sorted list of unique non-empty application names recorded in the database."""
+    path = target_path or db_path
+    apps: List[str] = []
+
+    try:
+        with get_db_connection(path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT DISTINCT app FROM entries WHERE app IS NOT NULL AND app != '' ORDER BY app ASC"
+            )
+            rows = cursor.fetchall()
+            apps = [row["app"] for row in rows if row["app"]]
+    except sqlite3.Error as e:
+        print(f"Database error fetching available apps: {e}")
+    return apps
+
+
+
 def search_entries(
     query: str,
     app: Optional[str] = None,

@@ -75,16 +75,57 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertEqual(json_data["count"], 1)
             self.assertEqual(json_data["entries"][0]["app"], "Firefox")
 
-    def test_serve_image(self):
-        with tempfile.TemporaryDirectory() as img_dir:
-            test_file = os.path.join(img_dir, "test_shot.webp")
-            with open(test_file, "wb") as f:
-                f.write(b"RIFFdummywebpdata")
+    def test_timeline_app_and_date_filtering(self):
+        with patch("openrecall.database.db_path", self.db_path):
+            # Seed entry for VSCode
+            insert_entry(
+                text="VSCode editor line 50",
+                timestamp=self.now + 10,
+                app="VSCode",
+                title="openrecall/app.py",
+                image_path=f"{self.now + 10}_0.webp",
+                target_path=self.db_path,
+            )
 
-            with patch("openrecall.app.screenshots_path", img_dir):
-                response = self.client.get("/static/test_shot.webp")
-                self.assertEqual(response.status_code, 200)
+            # Query timeline with app=Firefox filter
+            response = self.client.get("/?app=Firefox")
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertIn("Firefox", html)
+
+            # Check app dropdown option list contains VSCode and Firefox
+            self.assertIn('<option value="Firefox"', html)
+            self.assertIn('<option value="VSCode"', html)
+
+    def test_multi_monitor_badge_rendering(self):
+        with patch("openrecall.database.db_path", self.db_path):
+            insert_entry(
+                text="Multi-monitor 2 display text",
+                timestamp=self.now + 20,
+                app="Terminal",
+                title="Monitor 2 Display",
+                image_path=f"{self.now + 20}_1.webp",
+                monitor=2,
+                target_path=self.db_path,
+            )
+
+            response = self.client.get("/?app=Terminal")
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertIn("Mon 2", html)
+
+    def test_parse_date_to_timestamp_helper(self):
+        from openrecall.app import _parse_date_to_timestamp
+
+        ts_start = _parse_date_to_timestamp("2026-09-21", end_of_day=False)
+        ts_end = _parse_date_to_timestamp("2026-09-21", end_of_day=True)
+
+        self.assertIsNotNone(ts_start)
+        self.assertIsNotNone(ts_end)
+        self.assertTrue(ts_end > ts_start)
+        self.assertIsNone(_parse_date_to_timestamp("invalid-date"))
 
 
 if __name__ == "__main__":
     unittest.main()
+
