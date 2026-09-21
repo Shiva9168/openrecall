@@ -380,17 +380,35 @@ def search_entries(
                 """
                 app_pattern = f"%{app}%" if app else None
                 title_pattern = f"%{title}%" if title else None
-                cursor.execute(
-                    sql,
-                    (
-                        sanitized_query,
-                        app, app_pattern,
-                        title, title_pattern,
-                        start_time, start_time,
-                        end_time, end_time,
-                        safe_limit, safe_offset,
-                    ),
-                )
+
+                try:
+                    cursor.execute(
+                        sql,
+                        (
+                            sanitized_query,
+                            app, app_pattern,
+                            title, title_pattern,
+                            start_time, start_time,
+                            end_time, end_time,
+                            safe_limit, safe_offset,
+                        ),
+                    )
+                except sqlite3.OperationalError:
+                    # Fallback to safe literal quoted query if FTS5 syntax fails
+                    escaped_q = query.replace('"', '""')
+                    safe_literal = f'"{escaped_q}"'
+                    cursor.execute(
+                        sql,
+                        (
+                            safe_literal,
+                            app, app_pattern,
+                            title, title_pattern,
+                            start_time, start_time,
+                            end_time, end_time,
+                            safe_limit, safe_offset,
+                        ),
+                    )
+
             else:
                 # Metadata-only filter search
                 sql = """
@@ -421,3 +439,52 @@ def search_entries(
     except sqlite3.Error as e:
         print(f"Database error during search: {e}")
     return entries
+
+
+def get_timeline_entries(
+    start_time: Optional[int] = None,
+    end_time: Optional[int] = None,
+    app: Optional[str] = None,
+    title: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+    target_path: Optional[str] = None,
+) -> List[Entry]:
+    """Retrieves timeline entries filtered by timestamp range and metadata without returning heavy BLOB columns."""
+    path = target_path or db_path
+    safe_limit = min(max(1, limit), 500)
+    safe_offset = max(0, offset)
+    entries: List[Entry] = []
+
+    sql = """
+        SELECT id, app, title, text, timestamp, NULL as embedding, image_path, thumbnail_path, platform, monitor
+        FROM entries
+        WHERE (? IS NULL OR app LIKE ?)
+          AND (? IS NULL OR title LIKE ?)
+          AND (? IS NULL OR timestamp >= ?)
+          AND (? IS NULL OR timestamp <= ?)
+        ORDER BY timestamp DESC
+        LIMIT ? OFFSET ?
+    """
+    app_pattern = f"%{app}%" if app else None
+    title_pattern = f"%{title}%" if title else None
+
+    try:
+        with get_db_connection(path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                sql,
+                (
+                    app, app_pattern,
+                    title, title_pattern,
+                    start_time, start_time,
+                    end_time, end_time,
+                    safe_limit, safe_offset,
+                ),
+            )
+            rows = cursor.fetchall()
+            entries = [_row_to_entry(r) for r in rows]
+    except sqlite3.Error as e:
+        print(f"Database error during timeline fetch: {e}")
+    return entries
+
