@@ -11,7 +11,9 @@ install_requires = [
     "mss>=9.0.0",
     "rapidfuzz>=3.0.0",
     "Pillow>=10.0.0",
+    "pytesseract>=0.3.10",
 ]
+
 
 extras_require = {
     "windows": ["pywin32", "psutil"],

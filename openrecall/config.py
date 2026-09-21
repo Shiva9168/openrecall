@@ -8,6 +8,12 @@ FRAME_CHANGE_THRESHOLD = 0.001  # 0.1% Mean Absolute Difference threshold
 CAPTURE_QUEUE_MAX_SIZE = 10     # Strict bounded queue size for 2 GB RAM target
 CAPTURE_INTERVAL_SECONDS = 3.0
 
+# Centralized local OCR pipeline constants
+OCR_ENGINE = "auto"
+OCR_MAX_DIMENSION = 1920        # Bounded max image dimension for OCR to limit CPU/RAM
+OCR_LANG = "eng"
+
+
 parser = argparse.ArgumentParser(description="OpenRecall")
 
 parser.add_argument(
