@@ -180,13 +180,13 @@ def serve_image(filename):
     return send_from_directory(screenshots_path, filename)
 
 
-if __name__ == "__main__":
+def main():
     create_db()
-
     print(f"Appdata folder: {appdata_folder}")
-
-    # Start the thread to record screenshots
-    t = Thread(target=record_screenshots_thread)
+    t = Thread(target=record_screenshots_thread, daemon=True)
     t.start()
-
     app.run(port=8082)
+
+
+if __name__ == "__main__":
+    main()
