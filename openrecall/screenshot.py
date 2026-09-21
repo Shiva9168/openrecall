@@ -196,19 +196,23 @@ class CapturePipeline:
                 image = Image.fromarray(shot_array)
                 image.save(filepath, format="webp", quality=80)
 
-                # Process text extraction
-                text = extract_text_from_image(shot_array)
-                if text.strip():
-                    embedding = get_embedding(text)
-                    insert_entry(
-                        text=text,
-                        timestamp=timestamp,
-                        embedding=embedding,
-                        app=app_name,
-                        title=window_title,
-                        image_path=filename,
-                        monitor=monitor_idx + 1,
-                    )
+                # Process text extraction safely without throwing or killing worker thread
+                try:
+                    text = extract_text_from_image(shot_array)
+                except Exception as ocr_err:
+                    self._handle_ocr_error(ocr_err)
+                    text = ""
+
+                embedding = get_embedding(text) if text and text.strip() else None
+                insert_entry(
+                    text=text or "",
+                    timestamp=timestamp,
+                    embedding=embedding,
+                    app=app_name,
+                    title=window_title,
+                    image_path=filename,
+                    monitor=monitor_idx + 1,
+                )
             except Exception as e:
                 logger.error(f"Error processing frame item in worker loop: {e}")
             finally:
@@ -217,10 +221,16 @@ class CapturePipeline:
     def _handle_capture_error(self, err: Exception) -> None:
         self._consecutive_errors += 1
         now = time.time()
-        # Rate-limit repetitive error logging (log once every 10 seconds)
         if now - self._last_error_log_time > 10.0:
             logger.error(f"Screen capture failed (consecutive errors: {self._consecutive_errors}): {err}")
             self._last_error_log_time = now
+
+    def _handle_ocr_error(self, err: Exception) -> None:
+        now = time.time()
+        if now - self._last_error_log_time > 10.0:
+            logger.error(f"OCR text extraction failed: {err}")
+            self._last_error_log_time = now
+
 
 
 # Global pipeline instance
