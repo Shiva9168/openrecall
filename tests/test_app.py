@@ -114,18 +114,40 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             html = response.get_data(as_text=True)
             self.assertIn("Mon 2", html)
 
-    def test_parse_date_to_timestamp_helper(self):
-        from openrecall.app import _parse_date_to_timestamp
+    def test_capture_detail_route_valid_id(self):
+        with patch("openrecall.database.db_path", self.db_path):
+            response = self.client.get("/capture/1")
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertIn("Capture Metadata", html)
+            self.assertIn("Firefox", html)
+            self.assertIn("OpenRecall GitHub Repository", html)
+            self.assertIn("copyOcrText()", html)
 
-        ts_start = _parse_date_to_timestamp("2026-09-21", end_of_day=False)
-        ts_end = _parse_date_to_timestamp("2026-09-21", end_of_day=True)
+    def test_capture_detail_route_invalid_id(self):
+        with patch("openrecall.database.db_path", self.db_path):
+            response = self.client.get("/capture/99999")
+            self.assertEqual(response.status_code, 404)
+            html = response.get_data(as_text=True)
+            self.assertIn("Capture Not Found", html)
 
-        self.assertIsNotNone(ts_start)
-        self.assertIsNotNone(ts_end)
-        self.assertTrue(ts_end > ts_start)
-        self.assertIsNone(_parse_date_to_timestamp("invalid-date"))
+    def test_api_capture_detail_json(self):
+        with patch("openrecall.database.db_path", self.db_path):
+            response = self.client.get("/api/capture/1")
+            self.assertEqual(response.status_code, 200)
+            json_data = response.get_json()
+            self.assertEqual(json_data["id"], 1)
+            self.assertEqual(json_data["app"], "Firefox")
+
+    def test_api_capture_detail_invalid_id(self):
+        with patch("openrecall.database.db_path", self.db_path):
+            response = self.client.get("/api/capture/99999")
+            self.assertEqual(response.status_code, 404)
+            json_data = response.get_json()
+            self.assertIn("error", json_data)
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

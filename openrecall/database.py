@@ -362,6 +362,27 @@ def get_available_apps(target_path: Optional[str] = None) -> List[str]:
     return apps
 
 
+def get_entry_by_id(entry_id: int, target_path: Optional[str] = None) -> Optional[Entry]:
+    """Retrieves a single entry by its unique integer database ID."""
+    path = target_path or db_path
+    try:
+        with get_db_connection(path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor
+                   FROM entries
+                   WHERE id = ?""",
+                (entry_id,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return _row_to_entry(row)
+    except sqlite3.Error as e:
+        print(f"Database error fetching entry by ID {entry_id}: {e}")
+    return None
+
+
+
 
 def search_entries(
     query: str,

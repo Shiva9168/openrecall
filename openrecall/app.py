@@ -195,7 +195,7 @@ def timeline():
     {% for entry in entries %}
       <div class="col-12 col-md-6 col-lg-4 mb-4">
         <div class="card timeline-card h-100 bg-white border-0 shadow-sm">
-          <a href="#" data-toggle="modal" data-target="#modal-{{ loop.index0 }}">
+          <a href="/capture/{{ entry.id }}">
             <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
           </a>
           <div class="card-body p-3 d-flex flex-column justify-content-between">
@@ -207,36 +207,11 @@ def timeline():
                 {% endif %}
                 <span class="text-muted small ml-auto">{{ entry.timestamp | timestamp_to_human_readable }}</span>
               </div>
-              <h6 class="card-title text-truncate mb-2" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</h6>
+              <h6 class="card-title text-truncate mb-2"><a href="/capture/{{ entry.id }}" class="text-dark" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</a></h6>
               {% if entry.text %}
                 <p class="text-snippet mb-0">{{ entry.text }}</p>
               {% endif %}
             </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Preview Modal -->
-      <div class="modal fade" id="modal-{{ loop.index0 }}" tabindex="-1" role="dialog" aria-hidden="true">
-        <div class="modal-dialog modal-xl modal-dialog-centered" role="document">
-          <div class="modal-content">
-            <div class="modal-header">
-              <h5 class="modal-title text-truncate">{{ entry.app }} &mdash; {{ entry.title }}</h5>
-              <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-                <span aria-hidden="true">&times;</span>
-              </button>
-            </div>
-            <div class="modal-body text-center bg-dark p-2">
-              <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="img-fluid modal-img" alt="Full Screenshot">
-            </div>
-            {% if entry.text %}
-              <div class="modal-footer justify-content-start bg-light">
-                <div class="w-100">
-                  <strong class="d-block small text-uppercase text-muted mb-1">Extracted OCR Text:</strong>
-                  <pre class="mb-0 bg-white p-2 border rounded text-dark small" style="max-height: 150px; overflow-y: auto;">{{ entry.text }}</pre>
-                </div>
-              </div>
-            {% endif %}
           </div>
         </div>
       </div>
@@ -345,7 +320,7 @@ def search():
     {% for entry in entries %}
       <div class="col-12 col-md-6 col-lg-4 mb-4">
         <div class="card timeline-card h-100 bg-white border-0 shadow-sm">
-          <a href="#" data-toggle="modal" data-target="#modal-search-{{ loop.index0 }}">
+          <a href="/capture/{{ entry.id }}">
             <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
           </a>
           <div class="card-body p-3 d-flex flex-column justify-content-between">
@@ -357,36 +332,11 @@ def search():
                 {% endif %}
                 <span class="text-muted small ml-auto">{{ entry.timestamp | timestamp_to_human_readable }}</span>
               </div>
-              <h6 class="card-title text-truncate mb-2" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</h6>
+              <h6 class="card-title text-truncate mb-2"><a href="/capture/{{ entry.id }}" class="text-dark" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</a></h6>
               {% if entry.text %}
                 <p class="text-snippet mb-0">{{ entry.text }}</p>
               {% endif %}
             </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Preview Modal -->
-      <div class="modal fade" id="modal-search-{{ loop.index0 }}" tabindex="-1" role="dialog" aria-hidden="true">
-        <div class="modal-dialog modal-xl modal-dialog-centered" role="document">
-          <div class="modal-content">
-            <div class="modal-header">
-              <h5 class="modal-title text-truncate">{{ entry.app }} &mdash; {{ entry.title }}</h5>
-              <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-                <span aria-hidden="true">&times;</span>
-              </button>
-            </div>
-            <div class="modal-body text-center bg-dark p-2">
-              <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="img-fluid modal-img" alt="Full Screenshot">
-            </div>
-            {% if entry.text %}
-              <div class="modal-footer justify-content-start bg-light">
-                <div class="w-100">
-                  <strong class="d-block small text-uppercase text-muted mb-1">Extracted OCR Text:</strong>
-                  <pre class="mb-0 bg-white p-2 border rounded text-dark small" style="max-height: 150px; overflow-y: auto;">{{ entry.text }}</pre>
-                </div>
-              </div>
-            {% endif %}
           </div>
         </div>
       </div>
@@ -429,6 +379,123 @@ def search():
         page=page,
         limit=limit,
     )
+
+
+@app.route("/capture/<int:entry_id>")
+def capture_detail(entry_id: int):
+    """Renders the detailed single-screenshot inspection page with OCR text panel and copy button."""
+    from openrecall.database import get_entry_by_id
+
+    entry = get_entry_by_id(entry_id)
+    if not entry:
+        return (
+            render_template_string(
+                """
+{% extends "base_template" %}
+{% block content %}
+  <div class="alert alert-warning py-4 text-center border-0 shadow-sm mt-4" role="alert">
+    <i class="bi bi-exclamation-triangle display-4 d-block mb-2 text-warning"></i>
+    <h5 class="alert-heading">Capture Not Found</h5>
+    <p class="mb-3">No screenshot record exists for database ID {{ entry_id }}.</p>
+    <a href="/" class="btn btn-primary"><i class="bi bi-arrow-left"></i> Return to Timeline</a>
+  </div>
+{% endblock %}
+""",
+                entry_id=entry_id,
+            ),
+            404,
+        )
+
+    return render_template_string(
+        """
+{% extends "base_template" %}
+{% block content %}
+<div class="mb-3 d-flex justify-content-between align-items-center">
+  <a href="/" class="btn btn-outline-secondary btn-sm">
+    <i class="bi bi-arrow-left"></i> Back to Timeline
+  </a>
+  <div>
+    {% if entry.id > 1 %}
+      <a href="/capture/{{ entry.id - 1 }}" class="btn btn-outline-primary btn-sm mr-1"><i class="bi bi-chevron-left"></i> Previous</a>
+    {% endif %}
+    <a href="/capture/{{ entry.id + 1 }}" class="btn btn-outline-primary btn-sm">Next <i class="bi bi-chevron-right"></i></a>
+  </div>
+</div>
+
+<div class="row">
+  <div class="col-12 col-lg-8 mb-4">
+    <div class="card border-0 shadow-sm overflow-hidden bg-dark text-center p-2">
+      <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="img-fluid rounded" style="max-height: 75vh; width: auto; margin: 0 auto;" alt="Full Resolution Screenshot">
+    </div>
+  </div>
+
+  <div class="col-12 col-lg-4 mb-4">
+    <div class="card border-0 shadow-sm bg-white h-100">
+      <div class="card-header bg-white font-weight-bold border-bottom d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-info-circle text-primary mr-1"></i> Capture Metadata</span>
+        {% if entry.monitor and entry.monitor > 1 %}
+          <span class="badge badge-info">Monitor {{ entry.monitor }}</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+        <dl class="row mb-0">
+          <dt class="col-sm-4 text-muted small">Application</dt>
+          <dd class="col-sm-8 font-weight-bold text-truncate" title="{{ entry.app }}">{{ entry.app or 'Unknown App' }}</dd>
+
+          <dt class="col-sm-4 text-muted small">Window Title</dt>
+          <dd class="col-sm-8 text-truncate" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</dd>
+
+          <dt class="col-sm-4 text-muted small">Timestamp</dt>
+          <dd class="col-sm-8">{{ entry.timestamp | timestamp_to_human_readable }}</dd>
+
+          <dt class="col-sm-4 text-muted small">Database ID</dt>
+          <dd class="col-sm-8">#{{ entry.id }}</dd>
+
+          <dt class="col-sm-4 text-muted small">File Path</dt>
+          <dd class="col-sm-8 text-monospace small text-truncate" title="{{ entry.image_path }}">{{ entry.image_path }}</dd>
+        </dl>
+        <hr>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <strong class="small text-uppercase text-muted">Extracted OCR Text</strong>
+          {% if entry.text %}
+            <button class="btn btn-sm btn-outline-primary py-0" onclick="copyOcrText()"><i class="bi bi-clipboard"></i> Copy Text</button>
+          {% endif %}
+        </div>
+        {% if entry.text %}
+          <pre id="ocrTextBlock" class="bg-light p-3 border rounded small text-dark mb-0" style="max-height: 280px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;">{{ entry.text }}</pre>
+        {% else %}
+          <p class="text-muted small italic mb-0">No OCR text extracted for this capture.</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function copyOcrText() {
+  const text = document.getElementById('ocrTextBlock').innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    alert('OCR text copied to clipboard!');
+  }).catch(err => {
+    console.error('Failed to copy OCR text: ', err);
+  });
+}
+</script>
+{% endblock %}
+""",
+        entry=entry,
+    )
+
+
+@app.route("/api/capture/<int:entry_id>")
+def api_capture_detail(entry_id: int):
+    """REST API endpoint returning detailed metadata for a single capture ID as JSON."""
+    from openrecall.database import get_entry_by_id
+
+    entry = get_entry_by_id(entry_id)
+    if not entry:
+        return jsonify({"error": "Capture not found", "entry_id": entry_id}), 404
+    return jsonify(_entry_to_dict(entry))
 
 
 @app.route("/api/timeline")
