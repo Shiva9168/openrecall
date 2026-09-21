@@ -80,7 +80,54 @@ def take_screenshots() -> List[np.ndarray]:
     return capture_provider.take_screenshots(primary_only=primary_only)
 
 
+def save_screenshot_image(
+    image_array: np.ndarray,
+    filepath: str,
+    quality: int = 80,
+) -> bool:
+    """Safely saves a screenshot numpy array as a WebP image using atomic file replacement.
+
+    Ensures parent directories exist, performs write to a temporary file first,
+    and replaces the target file atomically to guarantee database/filesystem consistency.
+
+    Args:
+        image_array: Input RGB image array (numpy ndarray).
+        filepath: Target absolute path for output image file.
+        quality: WebP quality setting (1-100, default: 80).
+
+    Returns:
+        True if the screenshot image was successfully written to disk, False otherwise.
+    """
+    if image_array is None or image_array.size == 0 or image_array.ndim < 3:
+        logger.error("Cannot save screenshot: invalid or empty image array.")
+        return False
+
+    try:
+        norm_path = os.path.normpath(filepath)
+        dir_name = os.path.dirname(norm_path)
+        if dir_name and not os.path.exists(dir_name):
+            os.makedirs(dir_name, exist_ok=True)
+
+        temp_path = norm_path + ".tmp"
+        image = Image.fromarray(image_array)
+        image.save(temp_path, format="webp", quality=quality)
+
+        # Atomic replacement
+        os.replace(temp_path, norm_path)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to write screenshot image to {filepath}: {e}")
+        try:
+            temp_path = os.path.normpath(filepath) + ".tmp"
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+        return False
+
+
 class CapturePipeline:
+
     """Managed capture pipeline with bounded worker queue and backpressure handling."""
 
     def __init__(self, max_queue_size: int = CAPTURE_QUEUE_MAX_SIZE):
@@ -181,6 +228,7 @@ class CapturePipeline:
 
     def _processing_worker_loop(self) -> None:
         """Background worker thread processing queued frames (saving disk image and DB record)."""
+
         while not self._stop_event.is_set():
             try:
                 item = self.queue.get(timeout=0.5)
@@ -190,11 +238,12 @@ class CapturePipeline:
             try:
                 timestamp, monitor_idx, shot_array, app_name, window_title = item
                 filename = f"{timestamp}_{monitor_idx}.webp"
-                filepath = os.path.join(screenshots_path, filename)
+                filepath = os.path.normpath(os.path.join(screenshots_path, filename))
 
-                # Save screenshot as WebP image
-                image = Image.fromarray(shot_array)
-                image.save(filepath, format="webp", quality=80)
+                # Save screenshot safely with atomic file write
+                if not save_screenshot_image(shot_array, filepath, quality=80):
+                    logger.warning(f"Skipping database insertion for {filename}: File write failed.")
+                    continue
 
                 # Process text extraction safely without throwing or killing worker thread
                 try:
@@ -204,19 +253,24 @@ class CapturePipeline:
                     text = ""
 
                 embedding = get_embedding(text) if text and text.strip() else None
-                insert_entry(
-                    text=text or "",
-                    timestamp=timestamp,
-                    embedding=embedding,
-                    app=app_name,
-                    title=window_title,
-                    image_path=filename,
-                    monitor=monitor_idx + 1,
-                )
+
+                try:
+                    insert_entry(
+                        text=text or "",
+                        timestamp=timestamp,
+                        embedding=embedding,
+                        app=app_name,
+                        title=window_title,
+                        image_path=filename,
+                        monitor=monitor_idx + 1,
+                    )
+                except Exception as db_err:
+                    logger.error(f"Database insertion failed for screenshot {filename}: {db_err}")
             except Exception as e:
                 logger.error(f"Error processing frame item in worker loop: {e}")
             finally:
                 self.queue.task_done()
+
 
     def _handle_capture_error(self, err: Exception) -> None:
         self._consecutive_errors += 1
