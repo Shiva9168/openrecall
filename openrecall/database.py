@@ -10,7 +10,7 @@ import shutil
 import sqlite3
 import time
 from collections import namedtuple
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 
@@ -889,6 +889,151 @@ def trim_referenced_storage_to_capacity(
         current_referenced_bytes = get_referenced_storage_bytes(target_path=path, storage_dir=storage_dir)
 
     summary["final_referenced_bytes"] = current_referenced_bytes
+    return summary
+
+
+def reconcile_storage_and_database(
+    target_path: Optional[str] = None,
+    storage_dir: Optional[str] = None,
+    storage_lock: Optional[Any] = None,
+    cutoff_timestamp: Optional[int] = None,
+    max_capacity_bytes: int = 0,
+) -> dict:
+    """Performs unified storage maintenance and orphan reconciliation.
+
+    Sequentially executes:
+      1. Safe removal of leftover *.tmp write buffer files.
+      2. Identification and best-effort removal of orphan WebP image files.
+      3. Setting image_path = NULL for database rows referencing missing images.
+      4. Time-based retention cleanup (if cutoff_timestamp provided).
+      5. Capacity-based storage trimming (if max_capacity_bytes > 0).
+
+    Args:
+        target_path: Optional path to SQLite database file. Defaults to db_path.
+        storage_dir: Optional path to screenshot directory. Defaults to screenshots_path.
+        storage_lock: Optional threading.Lock protecting pipeline file writes.
+        cutoff_timestamp: Optional Unix timestamp for time-based retention cutoff.
+        max_capacity_bytes: Target referenced storage capacity in bytes (0 = disabled).
+
+    Returns:
+        Structured dictionary summarizing maintenance metrics.
+    """
+    import contextlib
+
+    path = target_path or db_path
+    s_dir = storage_dir or screenshots_path
+    lock_ctx = storage_lock if storage_lock is not None else contextlib.nullcontext()
+
+    start_time = time.time()
+    summary = {
+        "files_scanned": 0,
+        "orphan_files_removed": 0,
+        "orphan_files_failed": 0,
+        "tmp_files_removed": 0,
+        "missing_image_rows_fixed": 0,
+        "time_retention_deleted": 0,
+        "capacity_retention_deleted": 0,
+        "duration_seconds": 0.0,
+    }
+
+    with lock_ctx:
+        db_relative_paths = set()
+        db_entries_with_image = []
+
+        # 1. Load active database entries referencing images
+        try:
+            with get_db_connection(path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, image_path FROM entries WHERE image_path IS NOT NULL AND image_path != ''"
+                )
+                rows = cursor.fetchall()
+                for r in rows:
+                    raw_p = r["image_path"]
+                    norm_rel = os.path.normpath(raw_p)
+                    db_relative_paths.add(norm_rel)
+                    db_entries_with_image.append((r["id"], norm_rel))
+        except sqlite3.Error as db_err:
+            print(f"Database error loading entries for reconciliation: {db_err}")
+
+        # 2. Scan physical screenshots directory
+        physical_files = set()
+        tmp_files = []
+        if os.path.exists(s_dir):
+            try:
+                for entry in os.scandir(s_dir):
+                    try:
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        summary["files_scanned"] += 1
+                        name = entry.name
+                        if name.endswith(".tmp"):
+                            tmp_files.append(entry.path)
+                        elif name.endswith(".webp"):
+                            physical_files.add(os.path.normpath(name))
+                    except (OSError, PermissionError):
+                        pass
+            except (OSError, PermissionError):
+                pass
+
+        # 3. Clean leftover .tmp files
+        for tmp_p in tmp_files:
+            try:
+                os.remove(tmp_p)
+                summary["tmp_files_removed"] += 1
+            except (OSError, PermissionError):
+                pass
+
+        # 4. Reconcile orphan WebP files
+        orphan_files = physical_files - db_relative_paths
+        for orphan_rel in orphan_files:
+            abs_p = os.path.normpath(os.path.join(s_dir, orphan_rel))
+            try:
+                if os.path.exists(abs_p):
+                    os.remove(abs_p)
+                    summary["orphan_files_removed"] += 1
+            except (OSError, PermissionError):
+                summary["orphan_files_failed"] += 1
+
+        # 5. Fix missing image DB rows by setting image_path = NULL
+        missing_row_ids = []
+        for e_id, norm_rel in db_entries_with_image:
+            abs_p = os.path.normpath(os.path.join(s_dir, norm_rel))
+            if not os.path.exists(abs_p):
+                missing_row_ids.append(e_id)
+
+        if missing_row_ids:
+            batch_size = 50
+            for i in range(0, len(missing_row_ids), batch_size):
+                chunk = missing_row_ids[i : i + batch_size]
+                try:
+                    with get_db_connection(path) as conn:
+                        cursor = conn.cursor()
+                        placeholders = ",".join(["?"] * len(chunk))
+                        cursor.execute(
+                            f"UPDATE entries SET image_path = NULL WHERE id IN ({placeholders})",
+                            chunk,
+                        )
+                        conn.commit()
+                        summary["missing_image_rows_fixed"] += cursor.rowcount
+                except sqlite3.Error as e:
+                    print(f"Database error updating missing image rows: {e}")
+
+        # 6. Time-based retention
+        if cutoff_timestamp is not None:
+            time_summary = delete_entries_older_than(
+                cutoff_timestamp, target_path=path, storage_dir=s_dir
+            )
+            summary["time_retention_deleted"] = time_summary.get("total_deleted_rows", 0)
+
+        # 7. Capacity-based retention
+        if max_capacity_bytes > 0:
+            cap_summary = trim_referenced_storage_to_capacity(
+                max_capacity_bytes, target_path=path, storage_dir=s_dir
+            )
+            summary["capacity_retention_deleted"] = cap_summary.get("total_deleted_rows", 0)
+
+    summary["duration_seconds"] = round(time.time() - start_time, 4)
     return summary
 
 

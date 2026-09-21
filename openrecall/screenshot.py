@@ -144,6 +144,7 @@ class CapturePipeline:
         self.privacy_policy = privacy_policy or get_privacy_policy()
         self.queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
         self.last_screenshots: List[np.ndarray] = []
+        self.storage_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._capture_thread: Optional[threading.Thread] = None
         self._worker_thread: Optional[threading.Thread] = None
@@ -282,12 +283,7 @@ class CapturePipeline:
                 filename = f"{timestamp}_{monitor_idx}.webp"
                 filepath = os.path.normpath(os.path.join(screenshots_path, filename))
 
-                # Save screenshot safely with atomic file write
-                if not save_screenshot_image(shot_array, filepath, quality=80):
-                    logger.warning(f"Skipping database insertion for {filename}: File write failed.")
-                    continue
-
-                # Process text extraction safely without throwing or killing worker thread
+                # Process text extraction lock-free (CPU heavy)
                 try:
                     text = extract_text_from_image(shot_array)
                 except Exception as ocr_err:
@@ -296,18 +292,24 @@ class CapturePipeline:
 
                 embedding = get_embedding(text) if text and text.strip() else None
 
-                try:
-                    insert_entry(
-                        text=text or "",
-                        timestamp=timestamp,
-                        embedding=embedding,
-                        app=app_name,
-                        title=window_title,
-                        image_path=filename,
-                        monitor=monitor_idx + 1,
-                    )
-                except Exception as db_err:
-                    logger.error(f"Database insertion failed for screenshot {filename}: {db_err}")
+                # Critical section: file write + DB insertion protected by storage_lock
+                with self.storage_lock:
+                    if not save_screenshot_image(shot_array, filepath, quality=80):
+                        logger.warning(f"Skipping database insertion for {filename}: File write failed.")
+                        continue
+
+                    try:
+                        insert_entry(
+                            text=text or "",
+                            timestamp=timestamp,
+                            embedding=embedding,
+                            app=app_name,
+                            title=window_title,
+                            image_path=filename,
+                            monitor=monitor_idx + 1,
+                        )
+                    except Exception as db_err:
+                        logger.error(f"Database insertion failed for screenshot {filename}: {db_err}")
             except Exception as e:
                 logger.error(f"Error processing frame item in worker loop: {e}")
             finally:

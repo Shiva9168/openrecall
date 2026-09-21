@@ -17,6 +17,10 @@ OCR_LANG = "eng"
 # Centralized storage capacity configuration defaults
 MAX_STORAGE_BYTES_DEFAULT: int = 0  # 0 = disabled / unlimited
 
+# Centralized storage maintenance defaults
+MAINTENANCE_ENABLED: bool = True
+MAINTENANCE_INTERVAL_SECONDS: int = 86400  # Conservative 24-hour default
+
 
 def parse_max_storage_gb(gb_val: Optional[float]) -> int:
     """Parses a capacity limit in GB to integer bytes.
