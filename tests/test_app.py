@@ -147,6 +147,17 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertIn("error", json_data)
 
 
+    def test_offline_ui_no_external_cdn_links(self):
+        with patch("openrecall.database.db_path", self.db_path):
+            response = self.client.get("/")
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertNotIn("http://", html)
+            self.assertNotIn("https://", html)
+            self.assertNotIn("bootstrap.min.css", html)
+            self.assertNotIn("bootstrap-icons.css", html)
+
+
 if __name__ == "__main__":
     unittest.main()
 

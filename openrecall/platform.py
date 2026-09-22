@@ -132,6 +132,16 @@ class MSSScreenCaptureProvider(ScreenCaptureProvider):
         return screenshots
 
 
+def _get_autostart_command() -> str:
+    """Helper function to resolve executable command for OS autostart registration."""
+    import shutil
+    openrecall_bin = shutil.which("openrecall")
+    if openrecall_bin:
+        return f'"{os.path.normpath(openrecall_bin)}"'
+    python_bin = sys.executable or "python"
+    return f'"{os.path.normpath(python_bin)}" -m openrecall.app'
+
+
 class LinuxPlatformProvider(
     WindowMetadataProvider, IdleDetectionProvider, StartupIntegrationProvider
 ):
@@ -162,12 +172,13 @@ class LinuxPlatformProvider(
             autostart_dir = os.path.expanduser("~/.config/autostart")
             os.makedirs(autostart_dir, exist_ok=True)
             desktop_file = os.path.join(autostart_dir, "openrecall.desktop")
+            cmd = _get_autostart_command()
             with open(desktop_file, "w") as f:
                 f.write(
                     "[Desktop Entry]\n"
                     "Type=Application\n"
                     "Name=OpenRecall\n"
-                    "Exec=openrecall\n"
+                    f"Exec={cmd}\n"
                     "Hidden=false\n"
                     "NoDisplay=false\n"
                     "X-GNOME-Autostart-enabled=true\n"
@@ -296,19 +307,70 @@ class WindowsPlatformProvider(
             return None
 
     def enable_startup(self) -> bool:
-        return False
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE,
+            )
+            cmd = _get_autostart_command()
+            winreg.SetValueEx(key, "OpenRecall", 0, winreg.REG_SZ, cmd)
+            winreg.CloseKey(key)
+            return True
+        except Exception:
+            return False
 
     def disable_startup(self) -> bool:
-        return False
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE,
+            )
+            try:
+                winreg.DeleteValue(key, "OpenRecall")
+            except FileNotFoundError:
+                pass
+            winreg.CloseKey(key)
+            return True
+        except Exception:
+            return False
 
     def is_startup_enabled(self) -> bool:
-        return False
+        try:
+            import winreg
+
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_READ,
+            )
+            try:
+                val, _ = winreg.QueryValueEx(key, "OpenRecall")
+                winreg.CloseKey(key)
+                return bool(val)
+            except FileNotFoundError:
+                winreg.CloseKey(key)
+                return False
+        except Exception:
+            return False
 
 
 class MacOSPlatformProvider(
     WindowMetadataProvider, IdleDetectionProvider, StartupIntegrationProvider
 ):
     """macOS platform backend (verified when pyobjc is present)."""
+
+    def _get_launchagent_path(self) -> str:
+        home = os.path.expanduser("~")
+        return os.path.join(home, "Library", "LaunchAgents", "com.openrecall.app.plist")
 
     def get_active_app_name(self) -> Optional[str]:
         if NSWorkspace is None:
@@ -354,13 +416,61 @@ class MacOSPlatformProvider(
         return None
 
     def enable_startup(self) -> bool:
-        return False
+        try:
+            plist_path = self._get_launchagent_path()
+            dir_name = os.path.dirname(plist_path)
+            if not os.path.exists(dir_name):
+                os.makedirs(dir_name, exist_ok=True)
+
+            import shutil
+
+            openrecall_bin = shutil.which("openrecall")
+            if openrecall_bin:
+                program_args = [os.path.normpath(openrecall_bin)]
+            else:
+                python_bin = sys.executable or "python"
+                program_args = [os.path.normpath(python_bin), "-m", "openrecall.app"]
+
+            plist_content = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+                '<plist version="1.0">\n'
+                '<dict>\n'
+                '    <key>Label</key>\n'
+                '    <string>com.openrecall.app</string>\n'
+                '    <key>ProgramArguments</key>\n'
+                '    <array>\n'
+            )
+            for arg in program_args:
+                plist_content += f'        <string>{arg}</string>\n'
+            plist_content += (
+                '    </array>\n'
+                '    <key>RunAtLoad</key>\n'
+                '    <true/>\n'
+                '    <key>KeepAlive</key>\n'
+                '    <false/>\n'
+                '</dict>\n'
+                '</plist>\n'
+            )
+
+            with open(plist_path, "w", encoding="utf-8") as f:
+                f.write(plist_content)
+            return True
+        except Exception:
+            return False
 
     def disable_startup(self) -> bool:
-        return False
+        try:
+            plist_path = self._get_launchagent_path()
+            if os.path.exists(plist_path):
+                os.remove(plist_path)
+            return True
+        except Exception:
+            return False
 
     def is_startup_enabled(self) -> bool:
-        return False
+        plist_path = self._get_launchagent_path()
+        return os.path.exists(plist_path)
 
 
 class FallbackPlatformProvider(

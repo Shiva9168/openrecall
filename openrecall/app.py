@@ -36,33 +36,86 @@ base_template = """
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenRecall - Digital Memory</title>
-  <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
   <style>
-    body { background-color: #f8f9fa; color: #212529; }
-    .navbar { box-shadow: 0 2px 4px rgba(0,0,0,0.08); }
-    .timeline-card { transition: transform 0.15s ease-in-out, box-shadow 0.15s ease-in-out; border-radius: 8px; overflow: hidden; }
-    .timeline-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
-    .badge-app { background-color: #e9ecef; color: #495057; font-weight: 500; }
-    .badge-monitor { background-color: #d1ecf1; color: #0c5460; font-weight: 500; }
-    .text-snippet { font-size: 0.85rem; color: #6c757d; max-height: 3.6em; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-    .modal-img { max-height: 80vh; object-fit: contain; }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f8f9fa; color: #212529; line-height: 1.5; }
+    .container { width: 100%; max-width: 1140px; margin: 0 auto; padding: 0 15px; }
+    .navbar { background-color: #ffffff; border-bottom: 1px solid #e9ecef; box-shadow: 0 2px 4px rgba(0,0,0,0.04); padding: 12px 0; margin-bottom: 24px; }
+    .navbar .container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+    .navbar-brand { font-weight: 700; font-size: 1.25rem; color: #0d6efd; text-decoration: none; display: flex; align-items: center; gap: 6px; }
+    .search-form { display: flex; flex-grow: 1; max-width: 600px; gap: 8px; }
+    .input-group { display: flex; width: 100%; }
+    .form-control { flex: 1; padding: 8px 12px; font-size: 0.95rem; border: 1px solid #ced4da; border-radius: 6px 0 0 6px; outline: none; transition: border-color 0.15s ease; }
+    .form-control:focus { border-color: #0d6efd; }
+    .custom-select { padding: 8px 12px; font-size: 0.95rem; border: 1px solid #ced4da; border-radius: 6px; background-color: #fff; width: 100%; outline: none; }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 16px; font-size: 0.95rem; font-weight: 500; border-radius: 6px; border: 1px solid transparent; cursor: pointer; text-decoration: none; transition: all 0.15s ease; }
+    .btn-primary { background-color: #0d6efd; color: #fff; border-color: #0d6efd; }
+    .btn-primary:hover { background-color: #0b5ed7; border-color: #0a58ca; }
+    .btn-outline-primary { background-color: transparent; color: #0d6efd; border-color: #0d6efd; }
+    .btn-outline-primary:hover { background-color: #0d6efd; color: #fff; }
+    .btn-outline-secondary { background-color: transparent; color: #6c757d; border-color: #6c757d; }
+    .btn-outline-secondary:hover { background-color: #6c757d; color: #fff; }
+    .btn-sm { padding: 4px 10px; font-size: 0.85rem; border-radius: 4px; }
+    .btn-search { border-radius: 0 6px 6px 0; }
+
+    .card { background-color: #fff; border: 1px solid #e9ecef; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    .timeline-card { transition: transform 0.15s ease, box-shadow 0.15s ease; border-radius: 8px; overflow: hidden; height: 100%; display: flex; flex-direction: column; }
+    .timeline-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+    .timeline-card a { text-decoration: none; color: inherit; }
+    .card-img-top { width: 100%; height: 180px; object-fit: cover; border-bottom: 1px solid #f1f3f5; }
+    .card-body { padding: 16px; display: flex; flex-direction: column; justify-content: space-between; flex-grow: 1; }
+
+    .badge { display: inline-block; padding: 3px 8px; font-size: 0.75rem; font-weight: 600; border-radius: 4px; text-transform: uppercase; }
+    .badge-app { background-color: #e9ecef; color: #495057; }
+    .badge-monitor { background-color: #d1ecf1; color: #0c5460; }
+    .badge-info { background-color: #cff4fc; color: #055160; }
+    .text-snippet { font-size: 0.85rem; color: #6c757d; max-height: 3.6em; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-top: 6px; }
+
+    .row { display: flex; flex-wrap: wrap; margin: 0 -10px; }
+    .col-12 { flex: 0 0 100%; max-width: 100%; padding: 0 10px; }
+    .col-6 { flex: 0 0 50%; max-width: 50%; padding: 0 10px; }
+    .col-md-3 { flex: 0 0 25%; max-width: 25%; padding: 0 10px; }
+    .col-md-6 { flex: 0 0 50%; max-width: 50%; padding: 0 10px; }
+    .col-lg-4 { flex: 0 0 33.333333%; max-width: 33.333333%; padding: 0 10px; }
+    .col-lg-8 { flex: 0 0 66.666667%; max-width: 66.666667%; padding: 0 10px; }
+
+    @media (max-width: 768px) {
+      .col-md-3, .col-md-6, .col-lg-4, .col-lg-8 { flex: 0 0 100%; max-width: 100%; }
+      .form-row { flex-direction: column; gap: 10px; }
+    }
+
+    .form-row { display: flex; flex-wrap: wrap; align-items: center; margin: 0 -5px; gap: 8px; }
+    .form-row > div { padding: 0 5px; }
+    .card-body-filter { padding: 16px; margin-bottom: 24px; }
+
+    .pagination { display: flex; list-style: none; padding: 0; justify-content: center; gap: 4px; margin-top: 24px; }
+    .page-item { display: inline-block; }
+    .page-link { display: inline-block; padding: 6px 12px; border: 1px solid #dee2e6; border-radius: 4px; color: #0d6efd; text-decoration: none; background-color: #fff; }
+    .page-item.active .page-link { background-color: #0d6efd; color: #fff; border-color: #0d6efd; }
+    .page-item.disabled .page-link { color: #6c757d; pointer-events: none; background-color: #e9ecef; }
+
+    .alert { padding: 16px; border-radius: 6px; margin-bottom: 20px; }
+    .alert-info { background-color: #cff4fc; color: #055160; border: 1px solid #b6effb; }
+    .alert-warning { background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5; }
+
+    .icon-svg { width: 1.1em; height: 1.1em; fill: currentColor; vertical-align: -0.15em; }
+    pre { font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
   </style>
 </head>
 <body>
-<nav class="navbar navbar-expand-lg navbar-light bg-white mb-4">
+<nav class="navbar">
   <div class="container">
-    <a class="navbar-brand font-weight-bold" href="/">
-      <i class="bi bi-clock-history text-primary mr-1"></i> OpenRecall
+    <a class="navbar-brand" href="/">
+      <svg class="icon-svg" viewBox="0 0 16 16"><path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71V3.5z"/><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg>
+      OpenRecall
     </a>
-    <form class="form-inline my-2 my-lg-0 flex-grow-1 mx-lg-4" action="/search" method="get">
-      <div class="input-group w-100">
+    <form class="search-form" action="/search" method="get">
+      <div class="input-group">
         <input class="form-control" type="search" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search local digital memory..." aria-label="Search">
-        <div class="input-group-append">
-          <button class="btn btn-primary" type="submit">
-            <i class="bi bi-search"></i> Search
-          </button>
-        </div>
+        <button class="btn btn-primary btn-search" type="submit">
+          <svg class="icon-svg" viewBox="0 0 16 16"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>
+          Search
+        </button>
       </div>
     </form>
   </div>
@@ -71,10 +124,6 @@ base_template = """
 <div class="container pb-5">
   {% block content %}{% endblock %}
 </div>
-
-<script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.3/dist/umd/popper.min.js"></script>
-<script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
 </body>
 </html>
 """
