@@ -7,7 +7,7 @@ from typing import Optional
 DOWNSAMPLE_SIZE = (128, 128)
 FRAME_CHANGE_THRESHOLD = 0.001  # 0.1% Mean Absolute Difference threshold
 CAPTURE_QUEUE_MAX_SIZE = 10     # Strict bounded queue size for 2 GB RAM target
-CAPTURE_INTERVAL_SECONDS = 3.0
+CAPTURE_INTERVAL_SECONDS = 10.0
 
 # Centralized local OCR pipeline constants
 OCR_ENGINE = "auto"
@@ -61,6 +61,20 @@ parser.add_argument(
     type=float,
     default=None,
     help="Maximum referenced screenshot storage limit in Gigabytes (e.g. 5.0). Default is 0 (disabled).",
+)
+
+parser.add_argument(
+    "--enable-autostart",
+    action="store_true",
+    default=False,
+    help="Enable automatic startup on system boot",
+)
+
+parser.add_argument(
+    "--disable-autostart",
+    action="store_true",
+    default=False,
+    help="Disable automatic startup on system boot",
 )
 
 # Parse args safely with fallback when imported in test runners

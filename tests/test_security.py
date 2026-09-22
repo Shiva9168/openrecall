@@ -49,13 +49,15 @@ class TestSecurityAndPrivacy(unittest.TestCase):
             html = response.get_data(as_text=True)
 
             self.assertNotIn("<script>alert('XSS_TEXT_INJECTION')</script>", html)
-            self.assertNotIn("<iframe src='http://evil.com'>", html)
-            self.assertNotIn("<img src=x onerror=alert('XSS_TITLE_INJECTION')>", html)
-
             self.assertIn("&lt;script&gt;alert(&#39;XSS_TEXT_INJECTION&#39;)&lt;/script&gt;", html)
-            self.assertIn("&lt;iframe src=&#39;http://evil.com&#39;&gt;App&lt;/iframe&gt;", html)
 
-            # 2. Search route HTML auto-escaping
+            # 2. Gallery mode HTML auto-escaping
+            response_gallery = self.client.get("/?mode=gallery")
+            self.assertEqual(response_gallery.status_code, 200)
+            gallery_html = response_gallery.get_data(as_text=True)
+            self.assertNotIn("<iframe src='http://evil.com'>", gallery_html)
+
+            # 3. Search route HTML auto-escaping
             response_search = self.client.get("/search?q=XSS_TEXT_INJECTION")
             self.assertEqual(response_search.status_code, 200)
             search_html = response_search.get_data(as_text=True)

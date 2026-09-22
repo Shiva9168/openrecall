@@ -358,19 +358,8 @@ class CapturePipeline:
         changed_count = 0
         timestamp = int(time.time())
 
-        # Guard platform active app name call independently
-        try:
-            app_name = platform_provider.get_active_app_name() or "Unknown App"
-        except Exception as app_err:
-            logger.warning(f"Failed to retrieve active app name: {app_err}")
-            app_name = "Unknown App"
-
-        # Guard platform active window title call independently
-        try:
-            window_title = platform_provider.get_active_window_title() or "Unknown Title"
-        except Exception as title_err:
-            logger.warning(f"Failed to retrieve active window title: {title_err}")
-            window_title = "Unknown Title"
+        app_name = None
+        window_title = None
 
         for idx, current_shot in enumerate(current_screenshots):
             last_shot = self.last_screenshots[idx]

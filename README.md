@@ -81,15 +81,22 @@ Open your browser to [http://localhost:8082](http://localhost:8082) to access th
   - macOS: `~/Library/Application Support/openrecall`
 - `--primary-monitor-only` (default: `False`): Only record the primary monitor (rather than individual screenshots for all connected monitors).
 - `--max-storage-gb` (default: `0` / disabled): Maximum referenced screenshot storage capacity limit in Gigabytes (e.g. `--max-storage-gb 5.0`). When set, OpenRecall automatically trims the oldest screenshots when storage exceeds the threshold.
+- `--enable-autostart` (default: `False`): Explicitly registers per-user autostart for OpenRecall on system boot (Windows Registry, Linux XDG autostart, or macOS LaunchAgent).
+- `--disable-autostart` (default: `False`): Explicitly removes per-user autostart registration for OpenRecall.
 
 ## Local Web UI & REST API Controls
 
 The OpenRecall Web UI at `http://localhost:8082` includes:
+- **Time Travel Timeline Slider**: Interactive horizontal range slider to scrub through desktop visual history with 100ms debounced single-image rendering.
+- **Gallery Grid Mode**: Alternate view mode accessible via top navigation toggle (`/?mode=gallery`) presenting a paginated grid of captures.
 - **Status Indicator**: Displays whether recording is `Active` or `Paused` in the navigation header.
 - **Pause / Resume Controls**: Toggle background capture on or off directly via UI buttons or local POST requests:
-  - `POST /api/pause`: Pauses screen capture recording.
+  - `POST /api/pause`: Pauses screen capture recording (default interval: 10 seconds).
   - `POST /api/resume`: Resumes screen capture recording.
-- **First-Run Summary**: When launched on a new installation with zero records, the timeline presents an operational summary showing capture status, Tesseract OCR status, and local storage directory path.
+- **REST API Endpoints**:
+  - `GET /api/timeline/bounds`: Returns JSON timeline bounds (`earliest_ts`, `latest_ts`, `total_count`).
+  - `GET /api/timeline/at?timestamp=X`: Returns JSON capture record nearest to timestamp `X`.
+  - `GET /screenshot/<filename>`: Multi-root screenshot image endpoint.
 
 ## Troubleshooting
 

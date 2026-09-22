@@ -244,8 +244,8 @@ def insert_entry(
     text: str,
     timestamp: int,
     embedding: Optional[np.ndarray] = None,
-    app: str = "Unknown App",
-    title: str = "Unknown Title",
+    app: Optional[str] = None,
+    title: Optional[str] = None,
     image_path: Optional[str] = None,
     thumbnail_path: Optional[str] = None,
     platform: Optional[str] = None,
@@ -394,6 +394,103 @@ def get_total_entries_count(target_path: Optional[str] = None) -> int:
     except sqlite3.Error as e:
         print(f"Database error fetching total entries count: {e}")
         return 0
+
+
+def _get_historical_db_paths(target_path: Optional[str] = None) -> List[str]:
+    """Helper to return active DB path and (if distinct & valid v2 schema) default DB path."""
+    from openrecall.config import get_appdata_folder
+    active = target_path or db_path
+    paths = [active]
+    try:
+        default_folder = get_appdata_folder()
+        default_db = os.path.normpath(os.path.join(default_folder, "recall.db"))
+        norm_active = os.path.normpath(active)
+        if norm_active != default_db and os.path.exists(default_db) and os.path.getsize(default_db) > 0:
+            if get_schema_version(default_db) == SCHEMA_VERSION:
+                paths.append(default_db)
+    except Exception:
+        pass
+    return paths
+
+
+def _connect_readonly_db(db_file: str) -> sqlite3.Connection:
+    """Safely connects to a SQLite database in read-only mode."""
+    try:
+        conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    except Exception:
+        conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def get_timeline_bounds(target_path: Optional[str] = None) -> dict:
+    """Returns minimum timestamp, maximum timestamp, and total count across active and historical databases."""
+    db_paths = _get_historical_db_paths(target_path)
+    min_ts: Optional[int] = None
+    max_ts: Optional[int] = None
+    total_count: int = 0
+
+    for p in db_paths:
+        try:
+            with _connect_readonly_db(p) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts, COUNT(*) as cnt FROM entries")
+                row = cursor.fetchone()
+                if row and row["cnt"] > 0:
+                    if row["min_ts"] is not None:
+                        min_ts = row["min_ts"] if min_ts is None else min(min_ts, row["min_ts"])
+                    if row["max_ts"] is not None:
+                        max_ts = row["max_ts"] if max_ts is None else max(max_ts, row["max_ts"])
+                    total_count += row["cnt"]
+        except sqlite3.Error as e:
+            print(f"Database error fetching timeline bounds from {p}: {e}")
+
+    return {
+        "earliest_ts": min_ts,
+        "latest_ts": max_ts,
+        "total_count": total_count,
+    }
+
+
+def get_entry_nearest_timestamp(
+    target_ts: int, target_path: Optional[str] = None
+) -> Optional[Entry]:
+    """Retrieves the single entry closest to target_ts using O(log N) indexed B-tree queries."""
+    db_paths = _get_historical_db_paths(target_path)
+    candidates: List[Entry] = []
+
+    sql_le = """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor
+                FROM entries
+                WHERE timestamp <= ?
+                ORDER BY timestamp DESC
+                LIMIT 1"""
+
+    sql_ge = """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor
+                FROM entries
+                WHERE timestamp >= ?
+                ORDER BY timestamp ASC
+                LIMIT 1"""
+
+    for p in db_paths:
+        try:
+            with _connect_readonly_db(p) as conn:
+                cursor = conn.cursor()
+                cursor.execute(sql_le, (target_ts,))
+                row_le = cursor.fetchone()
+                if row_le:
+                    candidates.append(_row_to_entry(row_le))
+
+                cursor.execute(sql_ge, (target_ts,))
+                row_ge = cursor.fetchone()
+                if row_ge:
+                    candidates.append(_row_to_entry(row_ge))
+        except sqlite3.Error as e:
+            print(f"Database error fetching nearest timestamp entry from {p}: {e}")
+
+    if not candidates:
+        return None
+
+    return min(candidates, key=lambda e: abs(e.timestamp - target_ts))
 
 
 

@@ -4,6 +4,8 @@ venv
 *.db
 *.egg-info
 dist
+tempdist/
+tempdist_test_env/
 build
 .pytest_cache
 .vscode
