@@ -1,5 +1,6 @@
 """Flask web application and REST API for OpenRecall timeline and search UX."""
 
+import os
 import signal
 import sys
 from datetime import datetime, timezone
@@ -46,6 +47,7 @@ def inject_global_template_context():
         "appdata_folder": appdata_folder,
     }
 
+
 base_template = """
 <!DOCTYPE html>
 <html lang="en">
@@ -53,107 +55,95 @@ base_template = """
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenRecall - Digital Memory</title>
+  <link rel="stylesheet" href="/static/css/output.css">
   <style>
+    /* Baseline layout fallbacks */
     *, *::before, *::after { box-sizing: border-box; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f8f9fa; color: #212529; line-height: 1.5; }
-    .container { width: 100%; max-width: 1140px; margin: 0 auto; padding: 0 15px; }
-    .navbar { background-color: #ffffff; border-bottom: 1px solid #e9ecef; box-shadow: 0 2px 4px rgba(0,0,0,0.04); padding: 12px 0; margin-bottom: 24px; }
-    .navbar .container { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-    .navbar-brand { font-weight: 700; font-size: 1.25rem; color: #0d6efd; text-decoration: none; display: flex; align-items: center; gap: 6px; }
-    .search-form { display: flex; flex-grow: 1; max-width: 600px; gap: 8px; }
-    .input-group { display: flex; width: 100%; }
-    .form-control { flex: 1; padding: 8px 12px; font-size: 0.95rem; border: 1px solid #ced4da; border-radius: 6px 0 0 6px; outline: none; transition: border-color 0.15s ease; }
-    .form-control:focus { border-color: #0d6efd; }
-    .custom-select { padding: 8px 12px; font-size: 0.95rem; border: 1px solid #ced4da; border-radius: 6px; background-color: #fff; width: 100%; outline: none; }
-    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 16px; font-size: 0.95rem; font-weight: 500; border-radius: 6px; border: 1px solid transparent; cursor: pointer; text-decoration: none; transition: all 0.15s ease; }
-    .btn-primary { background-color: #0d6efd; color: #fff; border-color: #0d6efd; }
-    .btn-primary:hover { background-color: #0b5ed7; border-color: #0a58ca; }
-    .btn-outline-primary { background-color: transparent; color: #0d6efd; border-color: #0d6efd; }
-    .btn-outline-primary:hover { background-color: #0d6efd; color: #fff; }
-    .btn-outline-secondary { background-color: transparent; color: #6c757d; border-color: #6c757d; }
-    .btn-outline-secondary:hover { background-color: #6c757d; color: #fff; }
-    .btn-sm { padding: 4px 10px; font-size: 0.85rem; border-radius: 4px; }
-    .btn-search { border-radius: 0 6px 6px 0; }
-
-    .card { background-color: #fff; border: 1px solid #e9ecef; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
-    .timeline-card { transition: transform 0.15s ease, box-shadow 0.15s ease; border-radius: 8px; overflow: hidden; height: 100%; display: flex; flex-direction: column; }
-    .timeline-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
-    .timeline-card a { text-decoration: none; color: inherit; }
-    .card-img-top { width: 100%; height: 180px; object-fit: cover; border-bottom: 1px solid #f1f3f5; }
-    .card-body { padding: 16px; display: flex; flex-direction: column; justify-content: space-between; flex-grow: 1; }
-
-    .badge { display: inline-block; padding: 3px 8px; font-size: 0.75rem; font-weight: 600; border-radius: 4px; text-transform: uppercase; }
-    .badge-app { background-color: #e9ecef; color: #495057; }
-    .badge-monitor { background-color: #d1ecf1; color: #0c5460; }
-    .badge-info { background-color: #cff4fc; color: #055160; }
-    .text-snippet { font-size: 0.85rem; color: #6c757d; max-height: 3.6em; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-top: 6px; }
-
-    .row { display: flex; flex-wrap: wrap; margin: 0 -10px; }
-    .col-12 { flex: 0 0 100%; max-width: 100%; padding: 0 10px; }
-    .col-6 { flex: 0 0 50%; max-width: 50%; padding: 0 10px; }
-    .col-md-3 { flex: 0 0 25%; max-width: 25%; padding: 0 10px; }
-    .col-md-6 { flex: 0 0 50%; max-width: 50%; padding: 0 10px; }
-    .col-lg-4 { flex: 0 0 33.333333%; max-width: 33.333333%; padding: 0 10px; }
-    .col-lg-8 { flex: 0 0 66.666667%; max-width: 66.666667%; padding: 0 10px; }
-
-    @media (max-width: 768px) {
-      .col-md-3, .col-md-6, .col-lg-4, .col-lg-8 { flex: 0 0 100%; max-width: 100%; }
-      .form-row { flex-direction: column; gap: 10px; }
-    }
-
-    .form-row { display: flex; flex-wrap: wrap; align-items: center; margin: 0 -5px; gap: 8px; }
-    .form-row > div { padding: 0 5px; }
-    .card-body-filter { padding: 16px; margin-bottom: 24px; }
-
-    .pagination { display: flex; list-style: none; padding: 0; justify-content: center; gap: 4px; margin-top: 24px; }
-    .page-item { display: inline-block; }
-    .page-link { display: inline-block; padding: 6px 12px; border: 1px solid #dee2e6; border-radius: 4px; color: #0d6efd; text-decoration: none; background-color: #fff; }
-    .page-item.active .page-link { background-color: #0d6efd; color: #fff; border-color: #0d6efd; }
-    .page-item.disabled .page-link { color: #6c757d; pointer-events: none; background-color: #e9ecef; }
-
-    .alert { padding: 16px; border-radius: 6px; margin-bottom: 20px; }
-    .alert-info { background-color: #cff4fc; color: #055160; border: 1px solid #b6effb; }
-    .alert-warning { background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5; }
-
-    .icon-svg { width: 1.1em; height: 1.1em; fill: currentColor; vertical-align: -0.15em; }
-    pre { font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f8fafc; color: #0f172a; line-height: 1.5; }
+    .timeline-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; border-radius: 9999px; background: #cbd5e1; outline: none; transition: background 0.15s ease-in-out; }
+    .timeline-slider:hover { background: #94a3b8; }
+    .timeline-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #4f46e5; border: 2px solid #ffffff; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.15); cursor: pointer; transition: transform 0.1s ease, background-color 0.15s ease; }
+    .timeline-slider::-webkit-slider-thumb:hover { background: #4338ca; transform: scale(1.15); }
+    .timeline-slider::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%; background: #4f46e5; border: 2px solid #ffffff; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.15); cursor: pointer; transition: transform 0.1s ease, background-color 0.15s ease; }
+    .timeline-slider::-moz-range-thumb:hover { background: #4338ca; transform: scale(1.15); }
   </style>
 </head>
-<body>
-<nav class="navbar">
-  <div class="container">
-    <a class="navbar-brand" href="/">
-      <svg class="icon-svg" viewBox="0 0 16 16"><path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71V3.5z"/><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg>
-      OpenRecall
-    </a>
-    <div class="d-flex align-items-center gap-2 my-1 my-md-0">
-      {% if is_paused %}
-        <span class="badge" style="background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5; padding: 5px 9px;">Recording Paused</span>
-        <form action="/api/resume" method="post" style="display:inline; margin:0;">
-          <button type="submit" class="btn btn-sm btn-outline-primary py-1 px-2" style="font-size: 0.8rem;">Resume</button>
-        </form>
-      {% else %}
-        <span class="badge" style="background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; padding: 5px 9px;">Recording Active</span>
-        <form action="/api/pause" method="post" style="display:inline; margin:0;">
-          <button type="submit" class="btn btn-sm btn-outline-secondary py-1 px-2" style="font-size: 0.8rem;">Pause</button>
-        </form>
-      {% endif %}
-    </div>
-    <form class="search-form" action="/search" method="get">
-      <div class="input-group">
-        <input class="form-control" type="search" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search local digital memory..." aria-label="Search">
-        <button class="btn btn-primary btn-search" type="submit">
-          <svg class="icon-svg" viewBox="0 0 16 16"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z"/></svg>
-          Search
-        </button>
-      </div>
-    </form>
-  </div>
-</nav>
+<body class="bg-slate-50 text-slate-800 flex flex-col min-h-screen">
+  <!-- Offline Header Navigation -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16 gap-4">
+        
+        <!-- Brand & Privacy Indicator -->
+        <div class="flex items-center gap-3 shrink-0">
+          <a href="/" class="flex items-center gap-2 text-slate-900 font-bold text-lg hover:text-indigo-600 transition-colors">
+            <svg class="w-6 h-6 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+            <span>OpenRecall</span>
+          </a>
+          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
+            Local &bull; Private
+          </span>
+        </div>
 
-<div class="container pb-5">
-  {% block content %}{% endblock %}
-</div>
+        <!-- Recording Status & Controls -->
+        <div class="flex items-center gap-2">
+          {% if is_paused %}
+            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200">
+              <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+              <span>Recording Paused</span>
+            </span>
+            <form action="/api/resume" method="post" class="inline m-0">
+              <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors cursor-pointer">
+                Resume
+              </button>
+            </form>
+          {% else %}
+            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <span>Recording Active</span>
+            </span>
+            <form action="/api/pause" method="post" class="inline m-0">
+              <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors cursor-pointer">
+                Pause
+              </button>
+            </form>
+          {% endif %}
+        </div>
+
+        <!-- Integrated Search Bar -->
+        <form class="flex-1 max-w-md hidden md:flex items-center" action="/search" method="get">
+          <div class="relative w-full">
+            <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+              </svg>
+            </div>
+            <input class="w-full pl-9 pr-20 py-1.5 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all" 
+                   type="search" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search local memory..." aria-label="Search">
+            <button class="absolute inset-y-1 right-1 px-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-md transition-colors cursor-pointer" type="submit">
+              Search
+            </button>
+          </div>
+        </form>
+
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Offline Footer -->
+  <footer class="bg-white border-t border-slate-200 py-4 mt-auto">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
+      <div>OpenRecall &bull; Privacy-First Digital Memory Assistant</div>
+      <div>Stored locally on this system &bull; Offline &bull; No Telemetry</div>
+    </div>
+  </footer>
 </body>
 </html>
 """
@@ -198,7 +188,6 @@ def _parse_date_to_timestamp(date_str: Optional[str], end_of_day: bool = False) 
         return int(dt.timestamp())
     except Exception:
         return None
-
 
 
 def _entry_to_dict(entry) -> Dict[str, Any]:
@@ -253,31 +242,43 @@ def timeline():
             """
 {% extends "base_template" %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4 class="mb-0 font-weight-bold">Digital Memory Gallery</h4>
-  <div class="btn-group">
-    <a href="/?mode=timeline" class="btn btn-outline-primary btn-sm">Timeline View</a>
-    <a href="/?mode=gallery" class="btn btn-primary btn-sm">Gallery Grid</a>
+<div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-slate-200 mb-6 gap-4">
+  <div>
+    <h1 class="text-xl font-bold text-slate-900">Digital Memory Gallery</h1>
+    <p class="text-xs text-slate-500 mt-0.5">Browsing screen capture history as a grid</p>
+  </div>
+  <div class="inline-flex rounded-lg p-1 bg-slate-200/70 border border-slate-200">
+    <a href="/?mode=timeline" class="px-3 py-1.5 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 transition-colors">Timeline View</a>
+    <a href="/?mode=gallery" class="px-3 py-1.5 text-xs font-semibold rounded-md bg-white text-indigo-600 shadow-xs">Gallery Grid</a>
   </div>
 </div>
 
 {% if entries|length > 0 %}
-  <div class="row">
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {% for entry in entries %}
-      <div class="col-12 col-md-6 col-lg-4 mb-4">
-        <div class="card timeline-card h-100 bg-white border-0 shadow-sm">
-          <a href="/capture/{{ entry.id }}">
-            <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
-          </a>
-          <div class="card-body p-3 d-flex flex-column justify-content-between">
-            <div>
-              <div class="d-flex justify-content-between align-items-center mb-1">
-                <span class="text-muted small ml-auto">{{ entry.timestamp | timestamp_to_human_readable }}</span>
-              </div>
-              {% if entry.text %}
-                <p class="text-snippet mb-0">{{ entry.text }}</p>
+      <div class="bg-white rounded-xl border border-slate-200 shadow-xs hover:shadow-md hover:border-slate-300 transition-all overflow-hidden flex flex-col group">
+        <a href="/capture/{{ entry.id }}" class="block bg-slate-900 aspect-video overflow-hidden relative">
+          <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
+               loading="lazy"
+               class="w-full h-full object-cover group-hover:scale-102 transition-transform duration-200" alt="Screenshot">
+        </a>
+        <div class="p-4 flex flex-col flex-1 justify-between gap-3">
+          <div>
+            <div class="flex items-center justify-between text-xs text-slate-500 mb-1">
+              <span class="font-medium text-slate-700">{{ entry.timestamp | timestamp_to_human_readable }}</span>
+              {% if entry.monitor and entry.monitor > 1 %}
+                <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold border border-slate-200">Mon {{ entry.monitor }}</span>
               {% endif %}
             </div>
+            {% if entry.text %}
+              <p class="text-xs text-slate-600 line-clamp-3 leading-relaxed mt-2 bg-slate-50 p-2.5 rounded-lg border border-slate-100 font-mono">{{ entry.text }}</p>
+            {% endif %}
+          </div>
+          <div class="pt-2 border-t border-slate-100 flex items-center justify-between">
+            <span class="text-[11px] text-slate-400 font-mono">#{{ entry.id }}</span>
+            <a href="/capture/{{ entry.id }}" class="text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors flex items-center gap-1">
+              Inspect &rarr;
+            </a>
           </div>
         </div>
       </div>
@@ -285,31 +286,31 @@ def timeline():
   </div>
 
   <!-- Pagination Controls -->
-  <nav aria-label="Gallery pagination" class="mt-3">
-    <ul class="pagination justify-content-center">
+  <nav aria-label="Gallery pagination" class="mt-8 flex justify-center">
+    <div class="inline-flex items-center gap-2">
       {% if page > 1 %}
-        <li class="page-item">
-          <a class="page-link" href="/?mode=gallery&page={{ page - 1 }}&limit={{ limit }}">Previous</a>
-        </li>
+        <a class="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors" href="/?mode=gallery&page={{ page - 1 }}&limit={{ limit }}">Previous</a>
       {% else %}
-        <li class="page-item disabled"><span class="page-link">Previous</span></li>
+        <span class="px-3 py-1.5 text-xs font-medium text-slate-400 bg-slate-100 border border-slate-200 rounded-lg cursor-not-allowed">Previous</span>
       {% endif %}
-      <li class="page-item active"><span class="page-link">{{ page }}</span></li>
+      <span class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-lg">Page {{ page }}</span>
       {% if entries|length == limit %}
-        <li class="page-item">
-          <a class="page-link" href="/?mode=gallery&page={{ page + 1 }}&limit={{ limit }}">Next</a>
-        </li>
+        <a class="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors" href="/?mode=gallery&page={{ page + 1 }}&limit={{ limit }}">Next</a>
       {% else %}
-        <li class="page-item disabled"><span class="page-link">Next</span></li>
+        <span class="px-3 py-1.5 text-xs font-medium text-slate-400 bg-slate-100 border border-slate-200 rounded-lg cursor-not-allowed">Next</span>
       {% endif %}
-    </ul>
+    </div>
   </nav>
 
 {% else %}
-  <div class="alert alert-info py-4 text-center border-0 shadow-sm" role="alert">
-    <i class="bi bi-info-circle display-4 d-block mb-2 text-info"></i>
-    <h5 class="alert-heading">No timeline records found</h5>
-    <p class="mb-0">No desktop screen captures available.</p>
+  <div class="bg-white rounded-xl border border-slate-200 p-8 text-center max-w-md mx-auto my-8 shadow-xs">
+    <div class="w-12 h-12 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mx-auto mb-3">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+      </svg>
+    </div>
+    <h3 class="text-base font-bold text-slate-900 mb-1">No timeline records found</h3>
+    <p class="text-xs text-slate-500 mb-0">No desktop screen captures available matching this criteria.</p>
   </div>
 {% endif %}
 {% endblock %}
@@ -329,48 +330,64 @@ def timeline():
         """
 {% extends "base_template" %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4 class="mb-0 font-weight-bold text-dark">Timeline History</h4>
-  <div class="btn-group">
-    <a href="/" class="btn btn-primary btn-sm font-weight-bold">Timeline View</a>
-    <a href="/?mode=gallery" class="btn btn-outline-primary btn-sm">Gallery Grid</a>
+<div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-slate-200 mb-6 gap-4">
+  <div>
+    <h1 class="text-xl font-bold text-slate-900">Timeline History</h1>
+    <p class="text-xs text-slate-500 mt-0.5">Chronological screen capture moments</p>
+  </div>
+  <div class="inline-flex rounded-lg p-1 bg-slate-200/70 border border-slate-200">
+    <a href="/" class="px-3 py-1.5 text-xs font-semibold rounded-md bg-white text-indigo-600 shadow-xs">Timeline View</a>
+    <a href="/?mode=gallery" class="px-3 py-1.5 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 transition-colors">Gallery Grid</a>
   </div>
 </div>
 
 {% if total_count > 0 and latest_entry %}
-  <div class="card card-body bg-white shadow-sm border-0 mb-4 p-4 rounded-lg">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <h5 id="timelineTimeLabel" class="font-weight-bold text-primary mb-0">
-        {{ latest_entry.timestamp | timestamp_to_human_readable }}
-      </h5>
-      <span id="timelineCounter" class="badge badge-app p-2">
+  <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs mb-6 flex flex-col gap-5">
+    <!-- Header Timestamp & Capture Counter -->
+    <div class="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-slate-100">
+      <div class="flex items-center gap-2">
+        <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+        </svg>
+        <h2 id="timelineTimeLabel" class="text-base font-bold text-slate-900">
+          {{ latest_entry.timestamp | timestamp_to_human_readable }}
+        </h2>
+      </div>
+      <span id="timelineCounter" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 font-mono">
         Capture {{ total_count }} of {{ total_count }}
       </span>
     </div>
 
     <!-- Timeline Discrete Range Slider -->
-    <div class="mb-3">
-      <input type="range" class="custom-range w-100" id="timelineSlider"
+    <div class="space-y-2">
+      <input type="range" class="timeline-slider" id="timelineSlider"
              min="0" max="{{ total_count - 1 }}" value="{{ total_count - 1 }}" step="1"
-             style="width: 100%; cursor: pointer;">
-      <div class="d-flex justify-content-between text-muted small mt-1">
+             aria-label="Timeline navigation slider">
+      <div class="flex items-center justify-between text-[11px] text-slate-500 font-medium">
         <span>Oldest Capture</span>
-        <span class="text-secondary"><small>Use &larr; / &rarr; arrow keys to step frame-by-frame</small></span>
+        <span class="text-indigo-600 flex items-center gap-1 font-semibold">
+          <span>&larr;</span> <span>Use arrow keys to step frame-by-frame</span> <span>&rarr;</span>
+        </span>
         <span>Latest Capture</span>
       </div>
     </div>
 
-    <!-- Single Screenshot Image Display -->
-    <div class="card border-0 shadow-sm overflow-hidden bg-dark text-center p-2 mb-3">
-      <a id="timelineImgLink" href="/capture/{{ latest_entry.id }}" title="Click for details">
+    <!-- Single Screenshot Image Display Frame -->
+    <div class="relative bg-slate-950 rounded-xl overflow-hidden p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[300px]">
+      <a id="timelineImgLink" href="/capture/{{ latest_entry.id }}" class="block max-w-full" title="Click for capture details">
         <img id="timelineImg" src="/screenshot/{{ latest_entry.image_path or (latest_entry.timestamp|string + '_0.webp') }}"
-             class="img-fluid rounded" style="max-height: 65vh; width: auto; margin: 0 auto;" alt="Timeline Capture">
+             class="max-h-[65vh] w-auto h-auto object-contain rounded transition-opacity duration-150 mx-auto" alt="Timeline Capture">
       </a>
     </div>
 
-    <!-- OCR Text Snippet Panel -->
-    <div id="timelineSnippet" class="p-3 bg-light border rounded text-muted small" style="white-space: pre-wrap; word-break: break-word;">
-      {{ latest_entry.text or 'No OCR text extracted for this capture.' }}
+    <!-- Extracted Text Snippet Panel -->
+    <div class="bg-slate-50 rounded-lg p-4 border border-slate-200">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-bold text-slate-700 uppercase tracking-wider">Extracted Text</span>
+      </div>
+      <div id="timelineSnippet" class="text-xs text-slate-700 font-mono whitespace-pre-wrap break-words leading-relaxed max-h-40 overflow-y-auto">
+        {{ latest_entry.text or 'No OCR text extracted for this capture.' }}
+      </div>
     </div>
   </div>
 
@@ -411,7 +428,7 @@ def timeline():
       fetch('/api/timeline/at?timestamp=' + item.timestamp)
         .then(res => res.json())
         .then(data => {
-          if (reqId !== activeReqId) return; // Stale request protection
+          if (reqId !== activeReqId) return; // Stale response protection
           if (data && data.entry) {
             renderCapture(data.entry);
           }
@@ -472,39 +489,38 @@ def timeline():
   </script>
 
 {% else %}
-  <div class="card card-body bg-white shadow-sm p-4 text-center border-0 mb-4">
-    <div class="mb-3">
-      <svg class="icon-svg text-primary" style="width: 3rem; height: 3rem;" viewBox="0 0 16 16"><path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71V3.5z"/><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg>
+  <!-- Empty State Welcome Card -->
+  <div class="bg-white rounded-xl border border-slate-200 p-8 text-center max-w-2xl mx-auto my-6 shadow-xs">
+    <div class="w-16 h-16 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4 border border-indigo-100">
+      <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+      </svg>
     </div>
-    <h4 class="font-weight-bold mb-2">Welcome to OpenRecall</h4>
-    <p class="text-muted mx-auto mb-4" style="max-width: 600px;">
+    <h2 class="text-xl font-bold text-slate-900 mb-2">Welcome to OpenRecall</h2>
+    <p class="text-sm text-slate-600 mb-6 max-w-lg mx-auto">
       OpenRecall is active and monitoring your desktop in the background. Visual snapshots will automatically appear here as screen changes occur.
     </p>
 
-    <div class="row justify-content-center text-left mb-4">
-      <div class="col-12 col-md-8">
-        <ul class="list-group list-group-flush border rounded">
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span><strong class="text-dark">Capture Pipeline:</strong></span>
-            {% if is_paused %}
-              <span class="badge" style="background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5;">Paused</span>
-            {% else %}
-              <span class="badge" style="background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc;">Recording Active</span>
-            {% endif %}
-          </li>
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span><strong class="text-dark">Tesseract OCR Engine:</strong></span>
-            {% if ocr_available %}
-              <span class="badge badge-info" style="background-color: #cff4fc; color: #055160;">Available (Text Indexing Active)</span>
-            {% else %}
-              <span class="badge" style="background-color: #fff3cd; color: #664d03;">Unavailable (Visual Only)</span>
-            {% endif %}
-          </li>
-          <li class="list-group-item d-flex justify-content-between align-items-center">
-            <span><strong class="text-dark">Local Data Directory:</strong></span>
-            <code class="small text-truncate" style="max-width: 260px;" title="{{ appdata_folder }}">{{ appdata_folder }}</code>
-          </li>
-        </ul>
+    <div class="bg-slate-50 rounded-lg p-4 border border-slate-200 text-left text-xs max-w-md mx-auto space-y-3">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-200">
+        <span class="font-semibold text-slate-700">Capture Pipeline:</span>
+        {% if is_paused %}
+          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">Paused</span>
+        {% else %}
+          <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Recording Active</span>
+        {% endif %}
+      </div>
+      <div class="flex items-center justify-between pb-2 border-b border-slate-200">
+        <span class="font-semibold text-slate-700">Tesseract OCR Engine:</span>
+        {% if ocr_available %}
+          <span class="px-2 py-0.5 rounded bg-sky-100 text-sky-800 font-semibold">Available</span>
+        {% else %}
+          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">Unavailable</span>
+        {% endif %}
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="font-semibold text-slate-700">Local Data Directory:</span>
+        <code class="text-[11px] text-slate-600 truncate max-w-[200px]" title="{{ appdata_folder }}">{{ appdata_folder }}</code>
       </div>
     </div>
   </div>
@@ -544,60 +560,65 @@ def search():
         """
 {% extends "base_template" %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4 class="mb-0 font-weight-bold">
-    {% if q %}Search Results for &ldquo;{{ q }}&rdquo;{% else %}Search All Records{% endif %}
-  </h4>
-  <span class="text-muted small">Page {{ page }} ({{ entries|length }} matches)</span>
+<div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-slate-200 mb-6 gap-4">
+  <div>
+    <h1 class="text-xl font-bold text-slate-900">
+      {% if q %}Search Results for &ldquo;{{ q }}&rdquo;{% else %}Search All Records{% endif %}
+    </h1>
+    <p class="text-xs text-slate-500 mt-0.5">Page {{ page }} &bull; {{ entries|length }} matching captures</p>
+  </div>
 </div>
 
 <!-- Filter Bar -->
-<form method="get" action="/search" class="card card-body bg-white shadow-sm mb-4 p-3 border-0">
+<form method="get" action="/search" class="bg-white rounded-xl border border-slate-200 p-4 shadow-xs mb-6">
   <input type="hidden" name="q" value="{{ q }}">
-  <div class="form-row align-items-center">
-    <div class="col-12 col-md-3 mb-2 mb-md-0">
-      <select class="custom-select" name="app">
+  <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 items-end">
+    <div>
+      <label class="block text-xs font-semibold text-slate-700 mb-1">Application</label>
+      <select class="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" name="app">
         <option value="">All Applications</option>
         {% for a in available_apps %}
           <option value="{{ a }}" {% if request.args.get('app') == a %}selected{% endif %}>{{ a }}</option>
         {% endfor %}
       </select>
     </div>
-    <div class="col-6 col-md-3 mb-2 mb-md-0">
-      <input type="date" class="form-control" name="start_date" value="{{ request.args.get('start_date', '') }}" placeholder="From Date">
+    <div>
+      <label class="block text-xs font-semibold text-slate-700 mb-1">From Date</label>
+      <input type="date" class="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" name="start_date" value="{{ request.args.get('start_date', '') }}">
     </div>
-    <div class="col-6 col-md-3 mb-2 mb-md-0">
-      <input type="date" class="form-control" name="end_date" value="{{ request.args.get('end_date', '') }}" placeholder="To Date">
+    <div>
+      <label class="block text-xs font-semibold text-slate-700 mb-1">To Date</label>
+      <input type="date" class="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" name="end_date" value="{{ request.args.get('end_date', '') }}">
     </div>
-    <div class="col-12 col-md-3 d-flex">
-      <button type="submit" class="btn btn-primary flex-grow-1 mr-2"><i class="bi bi-funnel"></i> Filter</button>
-      <a href="/search?q={{ q }}" class="btn btn-outline-secondary">Reset</a>
+    <div class="flex items-center gap-2">
+      <button type="submit" class="flex-1 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition-colors cursor-pointer">Filter</button>
+      <a href="/search?q={{ q }}" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition-colors">Reset</a>
     </div>
   </div>
 </form>
 
 {% if entries|length > 0 %}
-  <div class="row">
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {% for entry in entries %}
-      <div class="col-12 col-md-6 col-lg-4 mb-4">
-        <div class="card timeline-card h-100 bg-white border-0 shadow-sm">
-          <a href="/capture/{{ entry.id }}">
-            <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
-          </a>
-          <div class="card-body p-3 d-flex flex-column justify-content-between">
-            <div>
-              <div class="d-flex justify-content-between align-items-center mb-1">
-                <span class="badge badge-app text-truncate" style="max-width: 140px;">{{ entry.app or 'Unknown App' }}</span>
-                {% if entry.monitor and entry.monitor > 1 %}
-                  <span class="badge badge-monitor ml-1">Mon {{ entry.monitor }}</span>
-                {% endif %}
-                <span class="text-muted small ml-auto">{{ entry.timestamp | timestamp_to_human_readable }}</span>
-              </div>
-              <h6 class="card-title text-truncate mb-2"><a href="/capture/{{ entry.id }}" class="text-dark" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</a></h6>
-              {% if entry.text %}
-                <p class="text-snippet mb-0">{{ entry.text }}</p>
+      <div class="bg-white rounded-xl border border-slate-200 shadow-xs hover:shadow-md hover:border-slate-300 transition-all overflow-hidden flex flex-col group">
+        <a href="/capture/{{ entry.id }}" class="block bg-slate-900 aspect-video overflow-hidden relative">
+          <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
+               loading="lazy"
+               class="w-full h-full object-cover group-hover:scale-102 transition-transform duration-200" alt="Screenshot">
+        </a>
+        <div class="p-4 flex flex-col flex-1 justify-between gap-3">
+          <div>
+            <div class="flex items-center justify-between text-xs text-slate-500 mb-1">
+              <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium text-[11px] border border-slate-200 truncate max-w-[140px]">{{ entry.app or 'Unknown App' }}</span>
+              {% if entry.monitor and entry.monitor > 1 %}
+                <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold border border-slate-200">Mon {{ entry.monitor }}</span>
               {% endif %}
+              <span class="font-medium text-slate-500 ml-auto">{{ entry.timestamp | timestamp_to_human_readable }}</span>
             </div>
+            <h3 class="font-bold text-slate-900 text-sm truncate mb-2 mt-1"><a href="/capture/{{ entry.id }}" class="hover:text-indigo-600 transition-colors" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</a></h3>
+            {% if entry.text %}
+              <p class="text-xs text-slate-600 line-clamp-3 leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100 font-mono">{{ entry.text }}</p>
+            {% endif %}
           </div>
         </div>
       </div>
@@ -605,31 +626,31 @@ def search():
   </div>
 
   <!-- Pagination Controls -->
-  <nav aria-label="Search pagination" class="mt-3">
-    <ul class="pagination justify-content-center">
+  <nav aria-label="Search pagination" class="mt-8 flex justify-center">
+    <div class="inline-flex items-center gap-2">
       {% if page > 1 %}
-        <li class="page-item">
-          <a class="page-link" href="/search?q={{ q }}&page={{ page - 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Previous</a>
-        </li>
+        <a class="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors" href="/search?q={{ q }}&page={{ page - 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Previous</a>
       {% else %}
-        <li class="page-item disabled"><span class="page-link">Previous</span></li>
+        <span class="px-3 py-1.5 text-xs font-medium text-slate-400 bg-slate-100 border border-slate-200 rounded-lg cursor-not-allowed">Previous</span>
       {% endif %}
-      <li class="page-item active"><span class="page-link">{{ page }}</span></li>
+      <span class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-lg">Page {{ page }}</span>
       {% if entries|length == limit %}
-        <li class="page-item">
-          <a class="page-link" href="/search?q={{ q }}&page={{ page + 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Next</a>
-        </li>
+        <a class="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors" href="/search?q={{ q }}&page={{ page + 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Next</a>
       {% else %}
-        <li class="page-item disabled"><span class="page-link">Next</span></li>
+        <span class="px-3 py-1.5 text-xs font-medium text-slate-400 bg-slate-100 border border-slate-200 rounded-lg cursor-not-allowed">Next</span>
       {% endif %}
-    </ul>
+    </div>
   </nav>
 
 {% else %}
-  <div class="alert alert-warning py-4 text-center border-0 shadow-sm" role="alert">
-    <i class="bi bi-exclamation-triangle display-4 d-block mb-2 text-warning"></i>
-    <h5 class="alert-heading">No matching memory records</h5>
-    <p class="mb-0">No records match your search query &ldquo;{{ q }}&rdquo;.</p>
+  <div class="bg-white rounded-xl border border-slate-200 p-8 text-center max-w-md mx-auto my-8 shadow-xs">
+    <div class="w-12 h-12 bg-amber-50 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-3 border border-amber-100">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+      </svg>
+    </div>
+    <h3 class="text-base font-bold text-slate-900 mb-1">No matching memory records</h3>
+    <p class="text-xs text-slate-500 mb-0">No records match your search query &ldquo;{{ q }}&rdquo;.</p>
   </div>
 {% endif %}
 {% endblock %}
@@ -654,11 +675,15 @@ def capture_detail(entry_id: int):
                 """
 {% extends "base_template" %}
 {% block content %}
-  <div class="alert alert-warning py-4 text-center border-0 shadow-sm mt-4" role="alert">
-    <i class="bi bi-exclamation-triangle display-4 d-block mb-2 text-warning"></i>
-    <h5 class="alert-heading">Capture Not Found</h5>
-    <p class="mb-3">No screenshot record exists for database ID {{ entry_id }}.</p>
-    <a href="/" class="btn btn-primary"><i class="bi bi-arrow-left"></i> Return to Timeline</a>
+  <div class="bg-white rounded-xl border border-amber-200 p-8 text-center max-w-md mx-auto my-8 shadow-xs">
+    <div class="w-12 h-12 bg-amber-50 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-3 border border-amber-100">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+      </svg>
+    </div>
+    <h3 class="text-base font-bold text-slate-900 mb-1">Capture Not Found</h3>
+    <p class="text-xs text-slate-500 mb-4">No screenshot record exists for database ID {{ entry_id }}.</p>
+    <a href="/" class="inline-flex items-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition-colors">&larr; Return to Timeline</a>
   </div>
 {% endblock %}
 """,
@@ -671,70 +696,82 @@ def capture_detail(entry_id: int):
         """
 {% extends "base_template" %}
 {% block content %}
-<div class="mb-3 d-flex justify-content-between align-items-center">
-  <a href="/" class="btn btn-outline-secondary btn-sm">
-    <i class="bi bi-arrow-left"></i> Back to Timeline
+<div class="flex items-center justify-between mb-6 pb-4 border-b border-slate-200">
+  <a href="/" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">
+    &larr; Back to Timeline
   </a>
-  <div>
+  <div class="inline-flex items-center gap-2">
     {% if entry.id > 1 %}
-      <a href="/capture/{{ entry.id - 1 }}" class="btn btn-outline-primary btn-sm mr-1"><i class="bi bi-chevron-left"></i> Previous</a>
+      <a href="/capture/{{ entry.id - 1 }}" class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">&larr; Previous</a>
     {% endif %}
-    <a href="/capture/{{ entry.id + 1 }}" class="btn btn-outline-primary btn-sm">Next <i class="bi bi-chevron-right"></i></a>
+    <a href="/capture/{{ entry.id + 1 }}" class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">Next &rarr;</a>
   </div>
 </div>
 
-<div class="row">
-  <div class="col-12 col-lg-8 mb-4">
-    <div class="card border-0 shadow-sm overflow-hidden bg-dark text-center p-2">
-      <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="img-fluid rounded" style="max-height: 75vh; width: auto; margin: 0 auto;" alt="Full Resolution Screenshot">
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+  <!-- Screenshot Display -->
+  <div class="lg:col-span-8">
+    <div class="bg-slate-950 rounded-xl overflow-hidden p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[400px]">
+      <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
+           class="max-h-[75vh] w-auto h-auto object-contain rounded mx-auto" alt="Full Resolution Screenshot">
     </div>
   </div>
 
-  <div class="col-12 col-lg-4 mb-4">
-    <div class="card border-0 shadow-sm bg-white h-100">
-      <div class="card-header bg-white font-weight-bold border-bottom d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-info-circle text-primary mr-1"></i> Capture Metadata</span>
+  <!-- Metadata & Extracted Text -->
+  <div class="lg:col-span-4 flex flex-col gap-6">
+    <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+        <h3 class="text-sm font-bold text-slate-900">Capture Metadata</h3>
         {% if entry.monitor and entry.monitor > 1 %}
-          <span class="badge badge-info">Monitor {{ entry.monitor }}</span>
+          <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold border border-slate-200">Monitor {{ entry.monitor }}</span>
         {% endif %}
       </div>
-      <div class="card-body">
-        <dl class="row mb-0">
-          <dt class="col-sm-4 text-muted small">Application</dt>
-          <dd class="col-sm-8 font-weight-bold text-truncate" title="{{ entry.app }}">{{ entry.app or 'Unknown App' }}</dd>
-
-          <dt class="col-sm-4 text-muted small">Window Title</dt>
-          <dd class="col-sm-8 text-truncate" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</dd>
-
-          <dt class="col-sm-4 text-muted small">Timestamp</dt>
-          <dd class="col-sm-8">{{ entry.timestamp | timestamp_to_human_readable }}</dd>
-
-          <dt class="col-sm-4 text-muted small">Database ID</dt>
-          <dd class="col-sm-8">#{{ entry.id }}</dd>
-
-          <dt class="col-sm-4 text-muted small">File Path</dt>
-          <dd class="col-sm-8 text-monospace small text-truncate" title="{{ entry.image_path }}">{{ entry.image_path }}</dd>
-        </dl>
-        <hr>
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <strong class="small text-uppercase text-muted">Extracted OCR Text</strong>
-          {% if entry.text %}
-            <button class="btn btn-sm btn-outline-primary py-0" onclick="copyOcrText()"><i class="bi bi-clipboard"></i> Copy Text</button>
-          {% endif %}
+      
+      <dl class="space-y-3 text-xs">
+        <div>
+          <dt class="text-slate-400 font-medium">Application</dt>
+          <dd class="text-slate-900 font-semibold truncate mt-0.5" title="{{ entry.app }}">{{ entry.app or 'Unknown App' }}</dd>
         </div>
+        <div>
+          <dt class="text-slate-400 font-medium">Window Title</dt>
+          <dd class="text-slate-700 truncate mt-0.5" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</dd>
+        </div>
+        <div>
+          <dt class="text-slate-400 font-medium">Timestamp</dt>
+          <dd class="text-slate-700 mt-0.5">{{ entry.timestamp | timestamp_to_human_readable }}</dd>
+        </div>
+        <div>
+          <dt class="text-slate-400 font-medium">Database ID</dt>
+          <dd class="text-slate-700 font-mono mt-0.5">#{{ entry.id }}</dd>
+        </div>
+        <div>
+          <dt class="text-slate-400 font-medium">File Path</dt>
+          <dd class="text-slate-600 font-mono text-[11px] truncate mt-0.5" title="{{ entry.image_path }}">{{ entry.image_path }}</dd>
+        </div>
+      </dl>
+
+      <hr class="my-4 border-slate-100">
+
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-bold text-slate-700 uppercase tracking-wider">Extracted OCR Text</span>
         {% if entry.text %}
-          <pre id="ocrTextBlock" class="bg-light p-3 border rounded small text-dark mb-0" style="max-height: 280px; overflow-y: auto; white-space: pre-wrap; word-break: break-word;">{{ entry.text }}</pre>
-        {% else %}
-          <p class="text-muted small italic mb-0">No OCR text extracted for this capture.</p>
+          <button class="px-2 py-1 text-[11px] font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded border border-indigo-200 transition-colors cursor-pointer" onclick="copyOcrText()">Copy Text</button>
         {% endif %}
       </div>
+      {% if entry.text %}
+        <pre id="ocrTextBlock" class="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs text-slate-700 font-mono max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">{{ entry.text }}</pre>
+      {% else %}
+        <p class="text-xs text-slate-400 italic">No OCR text extracted for this capture.</p>
+      {% endif %}
     </div>
   </div>
 </div>
 
 <script>
 function copyOcrText() {
-  const text = document.getElementById('ocrTextBlock').innerText;
+  const el = document.getElementById('ocrTextBlock');
+  if (!el) return;
+  const text = el.innerText;
   navigator.clipboard.writeText(text).then(() => {
     alert('OCR text copied to clipboard!');
   }).catch(err => {
@@ -886,20 +923,18 @@ def api_resume():
 @app.route("/screenshot/<filename>")
 def serve_image(filename):
     """Serves WebP screenshot files safely from normalized absolute active and historical appdata locations."""
-    import os
-    from openrecall.config import get_appdata_folder, screenshots_path
-
-    # Sanitize input filename to prevent directory traversal
     safe_filename = os.path.basename(filename)
     if not safe_filename or safe_filename != filename or safe_filename.startswith("."):
         return jsonify({"error": "Invalid screenshot filename"}), 400
 
-    active_dir = os.path.abspath(screenshots_path)
+    import openrecall.config as config
+    active_dir = os.path.abspath(config.screenshots_path)
     active_file = os.path.join(active_dir, safe_filename)
     if os.path.exists(active_file):
         return send_from_directory(active_dir, safe_filename)
 
     try:
+        from openrecall.config import get_appdata_folder
         default_folder = os.path.abspath(get_appdata_folder())
         default_screenshots = os.path.abspath(os.path.join(default_folder, "screenshots"))
         if os.path.normpath(default_screenshots) != os.path.normpath(active_dir):
@@ -912,12 +947,15 @@ def serve_image(filename):
     return jsonify({"error": "Screenshot file not found"}), 404
 
 
-@app.route("/static/<filename>")
-def serve_static_legacy(filename):
-    """Legacy static route fallback for screenshot images."""
+@app.route("/static/<path:filename>")
+def serve_static(filename):
+    """Serves compiled static CSS/JS assets or fallback legacy screenshots."""
     if filename.endswith(".webp"):
-        return serve_image(filename)
-    return send_from_directory(app.static_folder or screenshots_path, filename)
+        return serve_image(os.path.basename(filename))
+    static_dir = os.path.join(app.root_path, "static")
+    if os.path.exists(os.path.join(static_dir, filename)):
+        return send_from_directory(static_dir, filename)
+    return send_from_directory(screenshots_path, filename)
 
 
 def main():

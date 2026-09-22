@@ -32,6 +32,8 @@ setup(
     name="OpenRecall",
     version="0.8.0",
     packages=find_packages(),
+    package_data={"openrecall": ["static/*", "static/**/*"]},
+    include_package_data=True,
     install_requires=install_requires,
     long_description=long_description,
     long_description_content_type="text/markdown",

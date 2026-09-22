@@ -148,6 +148,14 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertNotIn("https://", html)
             self.assertNotIn("bootstrap.min.css", html)
             self.assertNotIn("bootstrap-icons.css", html)
+            self.assertIn("/static/css/output.css", html)
+
+    def test_offline_static_css_endpoint(self):
+        """Phase 9: Verifies that compiled static CSS output file is served offline via /static/css/output.css."""
+        response = self.client.get("/static/css/output.css")
+        self.assertEqual(response.status_code, 200)
+        css_text = response.get_data(as_text=True)
+        self.assertIn("timeline-slider", css_text)
 
     def test_api_pause_and_resume_routes(self):
         """Phase 7: Verifies POST /api/pause and POST /api/resume state toggling and JSON/form response."""
