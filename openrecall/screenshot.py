@@ -4,6 +4,7 @@ Provides low-CPU downsampled frame difference checking, multi-monitor support,
 bounded queue backpressure handling, and graceful error recovery.
 """
 
+import io
 import logging
 import os
 import queue
@@ -85,26 +86,51 @@ def take_screenshots() -> List[np.ndarray]:
     return capture_provider.take_screenshots(primary_only=primary_only)
 
 
-def save_screenshot_image(
+def encode_screenshot_bytes(
     image_array: np.ndarray,
-    filepath: str,
     quality: int = 80,
+) -> Optional[bytes]:
+    """Encodes a screenshot numpy array into WebP bytes in-memory (lock-free).
+
+    Args:
+        image_array: Input RGB image array (numpy ndarray).
+        quality: WebP quality setting (1-100, default: 80).
+
+    Returns:
+        Encoded WebP bytes if successful, None otherwise.
+    """
+    if image_array is None or image_array.size == 0 or image_array.ndim < 3:
+        logger.error("Cannot encode screenshot: invalid or empty image array.")
+        return None
+
+    try:
+        buffer = io.BytesIO()
+        image = Image.fromarray(image_array)
+        image.save(buffer, format="webp", quality=quality)
+        return buffer.getvalue()
+    except Exception as e:
+        logger.error(f"Failed to encode screenshot to WebP bytes: {e}")
+        return None
+
+
+def write_screenshot_bytes(
+    encoded_bytes: bytes,
+    filepath: str,
 ) -> bool:
-    """Safely saves a screenshot numpy array as a WebP image using atomic file replacement.
+    """Safely writes pre-encoded WebP bytes to disk using atomic file replacement.
 
     Ensures parent directories exist, performs write to a temporary file first,
     and replaces the target file atomically to guarantee database/filesystem consistency.
 
     Args:
-        image_array: Input RGB image array (numpy ndarray).
+        encoded_bytes: Input WebP image bytes.
         filepath: Target absolute path for output image file.
-        quality: WebP quality setting (1-100, default: 80).
 
     Returns:
-        True if the screenshot image was successfully written to disk, False otherwise.
+        True if the screenshot file was successfully written to disk, False otherwise.
     """
-    if image_array is None or image_array.size == 0 or image_array.ndim < 3:
-        logger.error("Cannot save screenshot: invalid or empty image array.")
+    if not encoded_bytes:
+        logger.error("Cannot write screenshot: invalid or empty bytes buffer.")
         return False
 
     try:
@@ -114,14 +140,14 @@ def save_screenshot_image(
             os.makedirs(dir_name, exist_ok=True)
 
         temp_path = norm_path + ".tmp"
-        image = Image.fromarray(image_array)
-        image.save(temp_path, format="webp", quality=quality)
+        with open(temp_path, "wb") as f:
+            f.write(encoded_bytes)
 
         # Atomic replacement
         os.replace(temp_path, norm_path)
         return True
     except Exception as e:
-        logger.error(f"Failed to write screenshot image to {filepath}: {e}")
+        logger.error(f"Failed to write screenshot bytes to {filepath}: {e}")
         try:
             temp_path = os.path.normpath(filepath) + ".tmp"
             if os.path.exists(temp_path):
@@ -129,6 +155,18 @@ def save_screenshot_image(
         except Exception:
             pass
         return False
+
+
+def save_screenshot_image(
+    image_array: np.ndarray,
+    filepath: str,
+    quality: int = 80,
+) -> bool:
+    """Safely encodes and saves a screenshot numpy array to disk."""
+    encoded_bytes = encode_screenshot_bytes(image_array, quality=quality)
+    if not encoded_bytes:
+        return False
+    return write_screenshot_bytes(encoded_bytes, filepath)
 
 
 class CapturePipeline:
@@ -398,9 +436,15 @@ class CapturePipeline:
 
                 embedding = get_embedding(text) if text and text.strip() else None
 
+                # Pre-encode WebP image bytes lock-free in-memory
+                webp_bytes = encode_screenshot_bytes(shot_array, quality=80)
+                if webp_bytes is None:
+                    logger.warning(f"Skipping database insertion for {filename}: In-memory WebP encoding failed.")
+                    continue
+
                 # Critical section: file write + DB insertion protected by storage_lock
                 with self.storage_lock:
-                    if not save_screenshot_image(shot_array, filepath, quality=80):
+                    if not write_screenshot_bytes(webp_bytes, filepath):
                         logger.warning(f"Skipping database insertion for {filename}: File write failed.")
                         continue
 
