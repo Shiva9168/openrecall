@@ -16,7 +16,7 @@ OpenRecall is a fully open-source, privacy-first alternative to proprietary solu
 
 ## What does it do?
 
-OpenRecall captures your digital history through regularly taken snapshots, which are essentially screenshots. The text and images within these screenshots are analyzed and made searchable, allowing you to quickly find specific information by typing relevant keywords into OpenRecall. You can also manually scroll back through your history to revisit past activities.
+OpenRecall captures your digital history through regularly taken snapshots (screenshots). The text and images within these screenshots are analyzed locally and made searchable, allowing you to quickly find specific information by typing relevant keywords into OpenRecall. You can also manually scroll back through your timeline history to revisit past activities.
 
 https://github.com/openrecall/openrecall/assets/16676419/cfc579cb-165b-43e4-9325-9160da6487d2
 
@@ -26,30 +26,15 @@ OpenRecall offers several key advantages over closed-source alternatives:
 
 - **Transparency**: OpenRecall is 100% open-source, allowing you to audit the source code for potential backdoors or privacy-invading features.
 - **Cross-platform Support**: OpenRecall works on Windows, macOS, and Linux, giving you the freedom to use it on your preferred operating system.
-- **Privacy-focused**: Your data is stored locally on your device, no internet connection or cloud is required. In addition, you have the option to encrypt the data on a removable disk for added security, read how in our [guide](docs/encryption.md) here. 
-- **Hardware Compatibility**: OpenRecall is designed to work with a [wide range of hardware](docs/hardware.md), unlike proprietary solutions that may require specific certified devices.
-
-<p align="center">
-  <a href="https://twitter.com/elonmusk/status/1792690964672450971" target="_blank">
-    <img src="images/black_mirror.png" alt="Elon Musk Tweet" width="400">
-  </a>
-</p>
+- **Privacy-focused & Offline-First**: Your data is stored locally on your device; no internet connection or cloud service is required.
+- **Hardware Compatibility**: OpenRecall is optimized for low-end hardware (~2 GB RAM, CPU-only, no dedicated GPU needed).
 
 ## Features
 
-- **Time Travel**: Revisit and explore your past digital activities seamlessly across Windows, macOS, or Linux.
-- **Local-First AI**: OpenRecall harnesses the power of local AI processing to keep your data private and secure.
-- **Semantic Search**: Advanced local OCR interprets your history, providing robust semantic search capabilities.
-- **Full Control Over Storage**: Your data is stored locally, giving you complete control over its management and security.
-
-<p align="center">
-  <img src="images/lisa_rewind.webp" alt="Lisa Rewind" width="400">
-</p>
-
-
-## Comparison
-
-
+- **Time Travel Timeline**: Revisit and explore your past digital activities seamlessly across Windows, macOS, or Linux.
+- **Local-First Search**: Advanced local OCR interprets your history, providing fast full-text FTS5 search capabilities.
+- **Pause & Resume Privacy Controls**: Easily pause and resume screen capture directly from the local Web UI or REST API (`/api/pause`, `/api/resume`).
+- **Full Control Over Storage**: Your data is stored locally with automatic background storage maintenance and capacity management.
 
 ## Platform & Operating System Support
 
@@ -74,61 +59,76 @@ Tesseract OCR is an optional system dependency. If installed and present on your
 - Tesseract OCR (Optional)
 
 To install:
-```
+```bash
 python3 -m pip install --upgrade openrecall
 ```
 
 To run:
-```
+```bash
 openrecall
 ```
 or:
-```
+```bash
 python3 -m openrecall.app
 ```
-Open your browser to:
-[http://localhost:8082](http://localhost:8082) to access OpenRecall.
+Open your browser to [http://localhost:8082](http://localhost:8082) to access the OpenRecall Web UI.
 
-## Arguments
-`--storage-path` (default: user data path for your OS): allows you to specify the path where the screenshots and database should be stored. We recommend [creating an encrypted volume](docs/encryption.md) to store your data.
+## Command-Line Arguments
 
-`--primary-monitor-only` (default: False): only record the primary monitor (rather than individual screenshots for other monitors).
+- `--storage-path`: Custom directory path to store screenshots and database (`recall.db`). Default is the user data path for your OS:
+  - Linux: `~/.local/share/openrecall`
+  - Windows: `%APPDATA%\openrecall`
+  - macOS: `~/Library/Application Support/openrecall`
+- `--primary-monitor-only` (default: `False`): Only record the primary monitor (rather than individual screenshots for all connected monitors).
+- `--max-storage-gb` (default: `0` / disabled): Maximum referenced screenshot storage capacity limit in Gigabytes (e.g. `--max-storage-gb 5.0`). When set, OpenRecall automatically trims the oldest screenshots when storage exceeds the threshold.
 
-`--max-storage-gb` (default: 0 / disabled): maximum referenced screenshot storage capacity limit in Gigabytes (e.g. `--max-storage-gb 5.0`).
+## Local Web UI & REST API Controls
 
-## Uninstall instructions
+The OpenRecall Web UI at `http://localhost:8082` includes:
+- **Status Indicator**: Displays whether recording is `Active` or `Paused` in the navigation header.
+- **Pause / Resume Controls**: Toggle background capture on or off directly via UI buttons or local POST requests:
+  - `POST /api/pause`: Pauses screen capture recording.
+  - `POST /api/resume`: Resumes screen capture recording.
+- **First-Run Summary**: When launched on a new installation with zero records, the timeline presents an operational summary showing capture status, Tesseract OCR status, and local storage directory path.
+
+## Troubleshooting
+
+- **Tesseract OCR not detected**: Install Tesseract using your system package manager (`sudo apt install tesseract-ocr` on Ubuntu/Debian, `brew install tesseract` on macOS, or the installer on Windows). OpenRecall will automatically detect Tesseract on your `PATH`.
+- **Port 8082 already in use**: Ensure another instance of OpenRecall is not already running.
+- **Wayland Window Titles showing 'Untitled Window'**: Under pure Wayland sessions, Linux security policies prevent external process window title inspection. OpenRecall degrades gracefully and continues capturing visual screenshots.
+
+## Uninstall Instructions
 
 To uninstall OpenRecall and remove all stored data:
 
 1. Uninstall the package:
-   ```
+   ```bash
    python3 -m pip uninstall openrecall
    ```
 
 2. Remove stored data:
    - On Windows:
-     ```
+     ```cmd
      rmdir /s %APPDATA%\openrecall
      ```
    - On macOS:
-     ```
+     ```bash
      rm -rf ~/Library/Application\ Support/openrecall
      ```
    - On Linux:
-     ```
+     ```bash
      rm -rf ~/.local/share/openrecall
      ```
 
-Note: If you specified a custom storage path at any time using the `--storage-path` argument, make sure to remove that directory too.
+*Note*: If you specified a custom storage path using `--storage-path`, ensure you remove that directory as well.
 
 ## Contribute
 
 As an open-source project, we welcome contributions from the community. If you'd like to help improve OpenRecall, please submit a pull request or open an issue on our GitHub repository.
 
-## Contact the maintainers
+## Contact the Maintainers
 mail@datatalk.be
 
 ## License
 
 OpenRecall is released under the [AGPLv3](https://opensource.org/licenses/AGPL-3.0), ensuring that it remains open and accessible to everyone.
-

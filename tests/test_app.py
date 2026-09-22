@@ -157,6 +157,90 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertNotIn("bootstrap.min.css", html)
             self.assertNotIn("bootstrap-icons.css", html)
 
+    def test_api_pause_and_resume_routes(self):
+        """Phase 7: Verifies POST /api/pause and POST /api/resume state toggling and JSON/form response."""
+        from openrecall.privacy import get_privacy_policy
+        policy = get_privacy_policy()
+
+        # 1. Test POST /api/pause JSON
+        res1 = self.client.post("/api/pause", json={})
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res1.get_json(), {"status": "paused", "is_paused": True})
+        self.assertTrue(policy.is_paused())
+
+        # Repeated pause call (idempotency)
+        res1_repeat = self.client.post("/api/pause", json={})
+        self.assertEqual(res1_repeat.status_code, 200)
+        self.assertTrue(policy.is_paused())
+
+        # 2. Test POST /api/resume JSON
+        res2 = self.client.post("/api/resume", json={})
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(res2.get_json(), {"status": "active", "is_paused": False})
+        self.assertFalse(policy.is_paused())
+
+        # Repeated resume call (idempotency)
+        res2_repeat = self.client.post("/api/resume", json={})
+        self.assertEqual(res2_repeat.status_code, 200)
+        self.assertFalse(policy.is_paused())
+
+        # 3. Test Form Submit redirect
+        res_form = self.client.post("/api/pause")
+        self.assertEqual(res_form.status_code, 302)
+        self.assertTrue(policy.is_paused())
+
+        # Reset state back to unpaused
+        policy.resume()
+
+    def test_navbar_status_badge_and_toggle_button(self):
+        """Phase 7: Verifies navbar renders Recording Active vs Recording Paused badge."""
+        from openrecall.privacy import get_privacy_policy
+        policy = get_privacy_policy()
+
+        with patch("openrecall.database.db_path", self.db_path):
+            policy.resume()
+            res_active = self.client.get("/")
+            self.assertIn("Recording Active", res_active.get_data(as_text=True))
+            self.assertIn("/api/pause", res_active.get_data(as_text=True))
+
+            policy.pause()
+            res_paused = self.client.get("/")
+            self.assertIn("Recording Paused", res_paused.get_data(as_text=True))
+            self.assertIn("/api/resume", res_paused.get_data(as_text=True))
+
+            policy.resume()
+
+    def test_first_run_empty_state_summary_card(self):
+        """Phase 7: Verifies first-run summary card on a fresh database with 0 total records."""
+        empty_dir = tempfile.TemporaryDirectory()
+        empty_db = os.path.join(empty_dir.name, "empty.db")
+        create_db(empty_db)
+
+        try:
+            with patch("openrecall.database.db_path", empty_db):
+                res = self.client.get("/")
+                self.assertEqual(res.status_code, 200)
+                html = res.get_data(as_text=True)
+
+                self.assertIn("Welcome to OpenRecall", html)
+                self.assertIn("Capture Pipeline:", html)
+                self.assertIn("Tesseract OCR Engine:", html)
+                self.assertIn("Local Data Directory:", html)
+        finally:
+            empty_dir.cleanup()
+
+    def test_filtered_empty_state_does_not_show_first_run_summary(self):
+        """Phase 7: Verifies that when records exist, active filters returning 0 results show filter alert, not first-run."""
+        with patch("openrecall.database.db_path", self.db_path):
+            # Query non-existent app filter
+            res = self.client.get("/?app=NonExistentApp999")
+            self.assertEqual(res.status_code, 200)
+            html = res.get_data(as_text=True)
+
+            self.assertNotIn("Welcome to OpenRecall", html)
+            self.assertIn("No timeline records found", html)
+            self.assertIn("No desktop screen captures match your active filters.", html)
+
 
 if __name__ == "__main__":
     unittest.main()

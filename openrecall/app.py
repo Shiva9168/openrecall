@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from threading import Thread
 from typing import Dict, Any, List, Optional
 
-from flask import Flask, jsonify, render_template_string, request, send_from_directory
+from flask import Flask, jsonify, redirect, render_template_string, request, send_from_directory
 from jinja2 import BaseLoader
 
 from openrecall.config import appdata_folder, screenshots_path
@@ -17,10 +17,13 @@ from openrecall.database import (
     get_recent_entries,
     get_timeline_entries,
     get_timestamps,
+    get_total_entries_count,
     reconcile_storage_and_database,
     search_entries,
 )
 from openrecall.maintenance import MaintenanceWorker
+from openrecall.ocr import TesseractOCRProvider
+from openrecall.privacy import get_privacy_policy
 from openrecall.screenshot import get_capture_pipeline, record_screenshots_thread
 from openrecall.utils import human_readable_time, timestamp_to_human_readable
 
@@ -28,6 +31,17 @@ app = Flask(__name__)
 
 app.jinja_env.filters["human_readable_time"] = human_readable_time
 app.jinja_env.filters["timestamp_to_human_readable"] = timestamp_to_human_readable
+
+
+@app.context_processor
+def inject_global_template_context():
+    policy = get_privacy_policy()
+    ocr_provider = TesseractOCRProvider()
+    return {
+        "is_paused": policy.is_paused(),
+        "ocr_available": ocr_provider.is_available(),
+        "appdata_folder": appdata_folder,
+    }
 
 base_template = """
 <!DOCTYPE html>
@@ -109,6 +123,19 @@ base_template = """
       <svg class="icon-svg" viewBox="0 0 16 16"><path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71V3.5z"/><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg>
       OpenRecall
     </a>
+    <div class="d-flex align-items-center gap-2 my-1 my-md-0">
+      {% if is_paused %}
+        <span class="badge" style="background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5; padding: 5px 9px;">Recording Paused</span>
+        <form action="/api/resume" method="post" style="display:inline; margin:0;">
+          <button type="submit" class="btn btn-sm btn-outline-primary py-1 px-2" style="font-size: 0.8rem;">Resume</button>
+        </form>
+      {% else %}
+        <span class="badge" style="background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc; padding: 5px 9px;">Recording Active</span>
+        <form action="/api/pause" method="post" style="display:inline; margin:0;">
+          <button type="submit" class="btn btn-sm btn-outline-secondary py-1 px-2" style="font-size: 0.8rem;">Pause</button>
+        </form>
+      {% endif %}
+    </div>
     <form class="search-form" action="/search" method="get">
       <div class="input-group">
         <input class="form-control" type="search" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search local digital memory..." aria-label="Search">
@@ -210,6 +237,7 @@ def timeline():
         offset=offset,
     )
 
+    total_count = get_total_entries_count()
     return render_template_string(
         """
 {% extends "base_template" %}
@@ -292,6 +320,54 @@ def timeline():
     </ul>
   </nav>
 
+{% elif total_count == 0 %}
+  <div class="card card-body bg-white shadow-sm p-4 text-center border-0 mb-4">
+    <div class="mb-3">
+      <svg class="icon-svg text-primary" style="width: 3rem; height: 3rem;" viewBox="0 0 16 16"><path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71V3.5z"/><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg>
+    </div>
+    <h4 class="font-weight-bold mb-2">Welcome to OpenRecall</h4>
+    <p class="text-muted mx-auto mb-4" style="max-width: 600px;">
+      OpenRecall is active and monitoring your desktop in the background. As window titles or screen content change, visual snapshots will automatically appear here.
+    </p>
+
+    <div class="row justify-content-center text-left mb-4">
+      <div class="col-12 col-md-8">
+        <ul class="list-group list-group-flush border rounded">
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span><strong class="text-dark">Capture Pipeline:</strong></span>
+            {% if is_paused %}
+              <span class="badge" style="background-color: #fff3cd; color: #664d03; border: 1px solid #ffecb5;">Paused</span>
+            {% else %}
+              <span class="badge" style="background-color: #d1e7dd; color: #0f5132; border: 1px solid #badbcc;">Recording Active</span>
+            {% endif %}
+          </li>
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span><strong class="text-dark">Tesseract OCR Engine:</strong></span>
+            {% if ocr_available %}
+              <span class="badge badge-info" style="background-color: #cff4fc; color: #055160;">Available (Text Indexing Active)</span>
+            {% else %}
+              <span class="badge" style="background-color: #fff3cd; color: #664d03;">Unavailable (Visual Only)</span>
+            {% endif %}
+          </li>
+          <li class="list-group-item d-flex justify-content-between align-items-center">
+            <span><strong class="text-dark">Local Data Directory:</strong></span>
+            <code class="small text-truncate" style="max-width: 260px;" title="{{ appdata_folder }}">{{ appdata_folder }}</code>
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="text-muted small">
+      {% if is_paused %}
+        <p class="mb-0">Capture is currently paused. Click <strong>Resume</strong> in the top navigation bar to start recording snapshots.</p>
+      {% elif not ocr_available %}
+        <p class="mb-0">Tesseract OCR is not detected on your system PATH. Screenshots will be recorded visually, but full-text OCR search requires installing Tesseract.</p>
+      {% else %}
+        <p class="mb-0">No action needed! Switch to another application window to trigger your first memory snapshot.</p>
+      {% endif %}
+    </div>
+  </div>
+
 {% else %}
   <div class="alert alert-info py-4 text-center border-0 shadow-sm" role="alert">
     <i class="bi bi-info-circle display-4 d-block mb-2 text-info"></i>
@@ -305,6 +381,7 @@ def timeline():
         available_apps=available_apps,
         page=page,
         limit=limit,
+        total_count=total_count,
     )
 
 
@@ -619,6 +696,26 @@ def api_health():
     """REST API endpoint returning application operational health metrics as JSON."""
     pipeline = get_capture_pipeline()
     return jsonify(pipeline.get_health_status())
+
+
+@app.route("/api/pause", methods=["POST"])
+def api_pause():
+    """REST API endpoint to pause screen capture recording."""
+    policy = get_privacy_policy()
+    policy.pause()
+    if request.is_json or request.headers.get("Accept") == "application/json" or request.args.get("format") == "json":
+        return jsonify({"status": "paused", "is_paused": True})
+    return redirect(request.referrer or "/")
+
+
+@app.route("/api/resume", methods=["POST"])
+def api_resume():
+    """REST API endpoint to resume screen capture recording."""
+    policy = get_privacy_policy()
+    policy.resume()
+    if request.is_json or request.headers.get("Accept") == "application/json" or request.args.get("format") == "json":
+        return jsonify({"status": "active", "is_paused": False})
+    return redirect(request.referrer or "/")
 
 
 @app.route("/static/<filename>")

@@ -382,6 +382,21 @@ def get_entry_by_id(entry_id: int, target_path: Optional[str] = None) -> Optiona
     return None
 
 
+def get_total_entries_count(target_path: Optional[str] = None) -> int:
+    """Returns the total number of records in the entries database table."""
+    path = target_path or db_path
+    try:
+        with get_db_connection(path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM entries")
+            row = cursor.fetchone()
+            return row[0] if row else 0
+    except sqlite3.Error as e:
+        print(f"Database error fetching total entries count: {e}")
+        return 0
+
+
+
 
 
 def search_entries(
