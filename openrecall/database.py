@@ -452,6 +452,30 @@ def get_timeline_bounds(target_path: Optional[str] = None) -> dict:
     }
 
 
+def get_timeline_captures_index(target_path: Optional[str] = None) -> List[dict]:
+    """Returns a lightweight sorted list of capture metadata dicts [{'id': id, 'timestamp': ts}, ...] for discrete timeline navigation."""
+    db_paths = _get_historical_db_paths(target_path)
+    all_items = []
+    seen_timestamps = set()
+
+    for p in db_paths:
+        try:
+            with _connect_readonly_db(p) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, timestamp FROM entries ORDER BY timestamp ASC")
+                rows = cursor.fetchall()
+                for r in rows:
+                    ts = r["timestamp"]
+                    if ts not in seen_timestamps:
+                        seen_timestamps.add(ts)
+                        all_items.append({"id": r["id"], "timestamp": ts})
+        except sqlite3.Error as e:
+            print(f"Database error fetching timeline index from {p}: {e}")
+
+    all_items.sort(key=lambda x: x["timestamp"])
+    return all_items
+
+
 def get_entry_nearest_timestamp(
     target_ts: int, target_path: Optional[str] = None
 ) -> Optional[Entry]:
