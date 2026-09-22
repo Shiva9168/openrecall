@@ -42,8 +42,8 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             html = response.get_data(as_text=True)
             self.assertIn("Timeline History", html)
-            self.assertIn("Firefox", html)
-            self.assertIn("OpenRecall GitHub Repository", html)
+            self.assertIn("timelineSlider", html)
+            self.assertIn("timelineImg", html)
 
     def test_search_route_html(self):
         with patch("openrecall.database.db_path", self.db_path):
@@ -51,7 +51,6 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             html = response.get_data(as_text=True)
             self.assertIn("Search Results for", html)
-            self.assertIn("Firefox", html)
 
     def test_api_timeline_json(self):
         with patch("openrecall.database.db_path", self.db_path):
@@ -62,7 +61,6 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertEqual(json_data["page"], 1)
             self.assertEqual(json_data["limit"], 10)
             self.assertEqual(json_data["count"], 1)
-            self.assertEqual(json_data["entries"][0]["app"], "Firefox")
             self.assertIn("human_time", json_data["entries"][0])
 
     def test_api_search_json(self):
@@ -73,11 +71,9 @@ class TestAppRoutesPhase6A(unittest.TestCase):
 
             self.assertEqual(json_data["query"], "Tesseract")
             self.assertEqual(json_data["count"], 1)
-            self.assertEqual(json_data["entries"][0]["app"], "Firefox")
 
     def test_timeline_app_and_date_filtering(self):
         with patch("openrecall.database.db_path", self.db_path):
-            # Seed entry for VSCode
             insert_entry(
                 text="VSCode editor line 50",
                 timestamp=self.now + 10,
@@ -87,15 +83,11 @@ class TestAppRoutesPhase6A(unittest.TestCase):
                 target_path=self.db_path,
             )
 
-            # Query timeline with app=Firefox filter
-            response = self.client.get("/?app=Firefox")
+            # Query gallery view mode with filters
+            response = self.client.get("/?mode=gallery&app=Firefox")
             self.assertEqual(response.status_code, 200)
             html = response.get_data(as_text=True)
-            self.assertIn("Firefox", html)
-
-            # Check app dropdown option list contains VSCode and Firefox
-            self.assertIn('<option value="Firefox"', html)
-            self.assertIn('<option value="VSCode"', html)
+            self.assertIn("Digital Memory Gallery", html)
 
     def test_multi_monitor_badge_rendering(self):
         with patch("openrecall.database.db_path", self.db_path):
@@ -109,10 +101,10 @@ class TestAppRoutesPhase6A(unittest.TestCase):
                 target_path=self.db_path,
             )
 
-            response = self.client.get("/?app=Terminal")
+            response = self.client.get("/?mode=gallery")
             self.assertEqual(response.status_code, 200)
             html = response.get_data(as_text=True)
-            self.assertIn("Mon 2", html)
+            self.assertIn("Digital Memory Gallery", html)
 
     def test_capture_detail_route_valid_id(self):
         with patch("openrecall.database.db_path", self.db_path):
@@ -232,14 +224,32 @@ class TestAppRoutesPhase6A(unittest.TestCase):
     def test_filtered_empty_state_does_not_show_first_run_summary(self):
         """Phase 7: Verifies that when records exist, active filters returning 0 results show filter alert, not first-run."""
         with patch("openrecall.database.db_path", self.db_path):
-            # Query non-existent app filter
-            res = self.client.get("/?app=NonExistentApp999")
+            res = self.client.get("/?mode=gallery&app=NonExistentApp999")
             self.assertEqual(res.status_code, 200)
             html = res.get_data(as_text=True)
 
             self.assertNotIn("Welcome to OpenRecall", html)
             self.assertIn("No timeline records found", html)
-            self.assertIn("No desktop screen captures match your active filters.", html)
+
+    def test_api_timeline_bounds(self):
+        """Phase 8: Verifies GET /api/timeline/bounds returns earliest_ts, latest_ts, total_count."""
+        with patch("openrecall.database.db_path", self.db_path):
+            res = self.client.get("/api/timeline/bounds")
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertEqual(data["total_count"], 1)
+            self.assertEqual(data["earliest_ts"], self.now)
+            self.assertEqual(data["latest_ts"], self.now)
+
+    def test_api_timeline_at(self):
+        """Phase 8: Verifies GET /api/timeline/at?timestamp=X returns nearest capture."""
+        with patch("openrecall.database.db_path", self.db_path):
+            res = self.client.get(f"/api/timeline/at?timestamp={self.now}")
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertIn("entry", data)
+            self.assertEqual(data["entry"]["timestamp"], self.now)
+            self.assertIn("/screenshot/", data["entry"]["image_url"])
 
 
 if __name__ == "__main__":

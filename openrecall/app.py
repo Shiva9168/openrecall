@@ -14,7 +14,9 @@ from openrecall.database import (
     create_db,
     get_all_entries,
     get_available_apps,
+    get_entry_nearest_timestamp,
     get_recent_entries,
+    get_timeline_bounds,
     get_timeline_entries,
     get_timestamps,
     get_total_entries_count,
@@ -202,14 +204,17 @@ def _entry_to_dict(entry) -> Dict[str, Any]:
     """Serializes a database Entry into a clean JSON-friendly dictionary."""
     text_val = entry.text or ""
     snippet = text_val[:200] + ("..." if len(text_val) > 200 else "")
+    img_name = entry.image_path or f"{entry.timestamp}_0.webp"
     return {
         "id": entry.id,
         "timestamp": entry.timestamp,
         "human_time": timestamp_to_human_readable(entry.timestamp),
         "app": entry.app or "Unknown App",
         "title": entry.title or "Unknown Title",
-        "image_path": entry.image_path or f"{entry.timestamp}_0.webp",
+        "image_path": img_name,
+        "image_url": f"/screenshot/{img_name}",
         "text_snippet": snippet,
+        "text": text_val,
         "platform": entry.platform,
         "monitor": entry.monitor,
     }
@@ -217,59 +222,43 @@ def _entry_to_dict(entry) -> Dict[str, Any]:
 
 @app.route("/")
 def timeline():
-    """Renders the paginated timeline history view with filter controls."""
+    """Renders the timeline view mode with range slider or gallery mode grid."""
+    mode = request.args.get("mode", "timeline")
     page, limit, offset = _get_pagination_params()
-    app_filter = request.args.get("app")
-    title_filter = request.args.get("title")
-    start_date = request.args.get("start_date")
-    end_date = request.args.get("end_date")
 
-    start_ts = _parse_date_to_timestamp(start_date, end_of_day=False)
-    end_ts = _parse_date_to_timestamp(end_date, end_of_day=True)
+    bounds = get_timeline_bounds()
+    total_count = bounds.get("total_count", 0)
 
-    available_apps = get_available_apps()
-    entries = get_timeline_entries(
-        start_time=start_ts,
-        end_time=end_ts,
-        app=app_filter,
-        title=title_filter,
-        limit=limit,
-        offset=offset,
-    )
+    if mode == "gallery":
+        app_filter = request.args.get("app")
+        title_filter = request.args.get("title")
+        start_date = request.args.get("start_date")
+        end_date = request.args.get("end_date")
 
-    total_count = get_total_entries_count()
-    return render_template_string(
-        """
+        start_ts = _parse_date_to_timestamp(start_date, end_of_day=False)
+        end_ts = _parse_date_to_timestamp(end_date, end_of_day=True)
+
+        available_apps = get_available_apps()
+        entries = get_timeline_entries(
+            start_time=start_ts,
+            end_time=end_ts,
+            app=app_filter,
+            title=title_filter,
+            limit=limit,
+            offset=offset,
+        )
+
+        return render_template_string(
+            """
 {% extends "base_template" %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h4 class="mb-0 font-weight-bold">Timeline History</h4>
-  <span class="text-muted small">Showing page {{ page }} ({{ entries|length }} items)</span>
-</div>
-
-<!-- Filter Bar -->
-<form method="get" action="/" class="card card-body bg-white shadow-sm mb-4 p-3 border-0">
-  <div class="form-row align-items-center">
-    <div class="col-12 col-md-3 mb-2 mb-md-0">
-      <select class="custom-select" name="app">
-        <option value="">All Applications</option>
-        {% for a in available_apps %}
-          <option value="{{ a }}" {% if request.args.get('app') == a %}selected{% endif %}>{{ a }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="col-6 col-md-3 mb-2 mb-md-0">
-      <input type="date" class="form-control" name="start_date" value="{{ request.args.get('start_date', '') }}" placeholder="From Date">
-    </div>
-    <div class="col-6 col-md-3 mb-2 mb-md-0">
-      <input type="date" class="form-control" name="end_date" value="{{ request.args.get('end_date', '') }}" placeholder="To Date">
-    </div>
-    <div class="col-12 col-md-3 d-flex">
-      <button type="submit" class="btn btn-primary flex-grow-1 mr-2"><i class="bi bi-funnel"></i> Filter</button>
-      <a href="/" class="btn btn-outline-secondary">Reset</a>
-    </div>
+  <h4 class="mb-0 font-weight-bold">Digital Memory Gallery</h4>
+  <div class="btn-group">
+    <a href="/?mode=timeline" class="btn btn-outline-primary btn-sm">Timeline View</a>
+    <a href="/?mode=gallery" class="btn btn-primary btn-sm">Gallery Grid</a>
   </div>
-</form>
+</div>
 
 {% if entries|length > 0 %}
   <div class="row">
@@ -277,18 +266,13 @@ def timeline():
       <div class="col-12 col-md-6 col-lg-4 mb-4">
         <div class="card timeline-card h-100 bg-white border-0 shadow-sm">
           <a href="/capture/{{ entry.id }}">
-            <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
+            <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
           </a>
           <div class="card-body p-3 d-flex flex-column justify-content-between">
             <div>
               <div class="d-flex justify-content-between align-items-center mb-1">
-                <span class="badge badge-app text-truncate" style="max-width: 140px;">{{ entry.app or 'Unknown App' }}</span>
-                {% if entry.monitor and entry.monitor > 1 %}
-                  <span class="badge badge-monitor ml-1">Mon {{ entry.monitor }}</span>
-                {% endif %}
                 <span class="text-muted small ml-auto">{{ entry.timestamp | timestamp_to_human_readable }}</span>
               </div>
-              <h6 class="card-title text-truncate mb-2"><a href="/capture/{{ entry.id }}" class="text-dark" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</a></h6>
               {% if entry.text %}
                 <p class="text-snippet mb-0">{{ entry.text }}</p>
               {% endif %}
@@ -300,11 +284,11 @@ def timeline():
   </div>
 
   <!-- Pagination Controls -->
-  <nav aria-label="Timeline pagination" class="mt-3">
+  <nav aria-label="Gallery pagination" class="mt-3">
     <ul class="pagination justify-content-center">
       {% if page > 1 %}
         <li class="page-item">
-          <a class="page-link" href="/?page={{ page - 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Previous</a>
+          <a class="page-link" href="/?mode=gallery&page={{ page - 1 }}&limit={{ limit }}">Previous</a>
         </li>
       {% else %}
         <li class="page-item disabled"><span class="page-link">Previous</span></li>
@@ -312,7 +296,7 @@ def timeline():
       <li class="page-item active"><span class="page-link">{{ page }}</span></li>
       {% if entries|length == limit %}
         <li class="page-item">
-          <a class="page-link" href="/?page={{ page + 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Next</a>
+          <a class="page-link" href="/?mode=gallery&page={{ page + 1 }}&limit={{ limit }}">Next</a>
         </li>
       {% else %}
         <li class="page-item disabled"><span class="page-link">Next</span></li>
@@ -320,14 +304,123 @@ def timeline():
     </ul>
   </nav>
 
-{% elif total_count == 0 %}
+{% else %}
+  <div class="alert alert-info py-4 text-center border-0 shadow-sm" role="alert">
+    <i class="bi bi-info-circle display-4 d-block mb-2 text-info"></i>
+    <h5 class="alert-heading">No timeline records found</h5>
+    <p class="mb-0">No desktop screen captures available.</p>
+  </div>
+{% endif %}
+{% endblock %}
+""",
+            entries=entries,
+            available_apps=available_apps,
+            page=page,
+            limit=limit,
+            total_count=total_count,
+        )
+
+    # Default: Timeline mode with Range Slider
+    latest_ts = bounds.get("latest_ts")
+    earliest_ts = bounds.get("earliest_ts")
+    latest_entry = get_entry_nearest_timestamp(latest_ts) if latest_ts is not None else None
+
+    return render_template_string(
+        """
+{% extends "base_template" %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h4 class="mb-0 font-weight-bold">Timeline History</h4>
+  <div class="btn-group">
+    <a href="/?mode=timeline" class="btn btn-primary btn-sm">Timeline View</a>
+    <a href="/?mode=gallery" class="btn btn-outline-primary btn-sm">Gallery Grid</a>
+  </div>
+</div>
+
+{% if total_count > 0 and latest_entry %}
+  <div class="card card-body bg-white shadow-sm border-0 mb-4 p-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h5 id="timelineTimeLabel" class="font-weight-bold text-primary mb-0">
+        {{ latest_entry.timestamp | timestamp_to_human_readable }}
+      </h5>
+      <span class="text-muted small">Total Captures: {{ total_count }}</span>
+    </div>
+
+    <!-- Timeline Horizontal Range Slider -->
+    <div class="mb-4">
+      <input type="range" class="form-range w-100" id="timelineSlider"
+             min="{{ earliest_ts }}" max="{{ latest_ts }}" value="{{ latest_ts }}"
+             style="width: 100%; cursor: pointer;">
+      <div class="d-flex justify-content-between text-muted small mt-1">
+        <span>Oldest: {{ earliest_ts | timestamp_to_human_readable }}</span>
+        <span>Present: {{ latest_ts | timestamp_to_human_readable }}</span>
+      </div>
+    </div>
+
+    <!-- Single Screenshot Image Display -->
+    <div class="card border-0 shadow-sm overflow-hidden bg-dark text-center p-2 mb-3">
+      <a id="timelineImgLink" href="/capture/{{ latest_entry.id }}">
+        <img id="timelineImg" src="/screenshot/{{ latest_entry.image_path or (latest_entry.timestamp|string + '_0.webp') }}"
+             class="img-fluid rounded" style="max-height: 65vh; width: auto; margin: 0 auto;" alt="Timeline Capture">
+      </a>
+    </div>
+
+    <!-- OCR Text Snippet Panel -->
+    <div id="timelineSnippet" class="p-3 bg-light border rounded text-muted small" style="white-space: pre-wrap; word-break: break-word;">
+      {{ latest_entry.text or 'No OCR text extracted for this capture.' }}
+    </div>
+  </div>
+
+  <script>
+  (function() {
+    const slider = document.getElementById('timelineSlider');
+    const timeLabel = document.getElementById('timelineTimeLabel');
+    const img = document.getElementById('timelineImg');
+    const imgLink = document.getElementById('timelineImgLink');
+    const snippet = document.getElementById('timelineSnippet');
+    if (!slider) return;
+
+    let debounceTimer = null;
+
+    function formatTimestamp(ts) {
+      const d = new Date(ts * 1000);
+      return d.toLocaleString();
+    }
+
+    function fetchCaptureAt(ts) {
+      fetch('/api/timeline/at?timestamp=' + ts)
+        .then(res => res.json())
+        .then(data => {
+          if (data && data.entry) {
+            const e = data.entry;
+            if (timeLabel) timeLabel.innerText = e.human_time || formatTimestamp(e.timestamp);
+            if (img) img.src = e.image_url || ('/screenshot/' + e.image_path);
+            if (imgLink) imgLink.href = '/capture/' + e.id;
+            if (snippet) snippet.innerText = e.text || e.text_snippet || 'No OCR text extracted for this capture.';
+          }
+        })
+        .catch(err => console.error(err));
+    }
+
+    slider.addEventListener('input', function() {
+      const val = parseInt(this.value, 10);
+      if (timeLabel) timeLabel.innerText = formatTimestamp(val);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(function() {
+        fetchCaptureAt(val);
+      }, 100);
+    });
+  })();
+  </script>
+
+{% else %}
   <div class="card card-body bg-white shadow-sm p-4 text-center border-0 mb-4">
     <div class="mb-3">
       <svg class="icon-svg text-primary" style="width: 3rem; height: 3rem;" viewBox="0 0 16 16"><path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71V3.5z"/><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/></svg>
     </div>
     <h4 class="font-weight-bold mb-2">Welcome to OpenRecall</h4>
     <p class="text-muted mx-auto mb-4" style="max-width: 600px;">
-      OpenRecall is active and monitoring your desktop in the background. As window titles or screen content change, visual snapshots will automatically appear here.
+      OpenRecall is active and monitoring your desktop in the background. Visual snapshots will automatically appear here as screen changes occur.
     </p>
 
     <div class="row justify-content-center text-left mb-4">
@@ -356,32 +449,14 @@ def timeline():
         </ul>
       </div>
     </div>
-
-    <div class="text-muted small">
-      {% if is_paused %}
-        <p class="mb-0">Capture is currently paused. Click <strong>Resume</strong> in the top navigation bar to start recording snapshots.</p>
-      {% elif not ocr_available %}
-        <p class="mb-0">Tesseract OCR is not detected on your system PATH. Screenshots will be recorded visually, but full-text OCR search requires installing Tesseract.</p>
-      {% else %}
-        <p class="mb-0">No action needed! Switch to another application window to trigger your first memory snapshot.</p>
-      {% endif %}
-    </div>
-  </div>
-
-{% else %}
-  <div class="alert alert-info py-4 text-center border-0 shadow-sm" role="alert">
-    <i class="bi bi-info-circle display-4 d-block mb-2 text-info"></i>
-    <h5 class="alert-heading">No timeline records found</h5>
-    <p class="mb-0">No desktop screen captures match your active filters.</p>
   </div>
 {% endif %}
 {% endblock %}
 """,
-        entries=entries,
-        available_apps=available_apps,
-        page=page,
-        limit=limit,
         total_count=total_count,
+        earliest_ts=earliest_ts,
+        latest_ts=latest_ts,
+        latest_entry=latest_entry,
     )
 
 
@@ -451,7 +526,7 @@ def search():
       <div class="col-12 col-md-6 col-lg-4 mb-4">
         <div class="card timeline-card h-100 bg-white border-0 shadow-sm">
           <a href="/capture/{{ entry.id }}">
-            <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
+            <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="card-img-top" alt="Screenshot" style="height: 180px; object-fit: cover;">
           </a>
           <div class="card-body p-3 d-flex flex-column justify-content-between">
             <div>
@@ -555,7 +630,7 @@ def capture_detail(entry_id: int):
 <div class="row">
   <div class="col-12 col-lg-8 mb-4">
     <div class="card border-0 shadow-sm overflow-hidden bg-dark text-center p-2">
-      <img src="/static/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="img-fluid rounded" style="max-height: 75vh; width: auto; margin: 0 auto;" alt="Full Resolution Screenshot">
+      <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" class="img-fluid rounded" style="max-height: 75vh; width: auto; margin: 0 auto;" alt="Full Resolution Screenshot">
     </div>
   </div>
 
@@ -658,6 +733,30 @@ def api_timeline():
     })
 
 
+@app.route("/api/timeline/bounds")
+def api_timeline_bounds():
+    """REST API endpoint returning earliest timestamp, latest timestamp, and total count."""
+    bounds = get_timeline_bounds()
+    return jsonify(bounds)
+
+
+@app.route("/api/timeline/at")
+def api_timeline_at():
+    """REST API endpoint returning the single capture entry nearest to requested timestamp."""
+    ts_arg = request.args.get("timestamp")
+    if not ts_arg:
+        return jsonify({"error": "Missing timestamp parameter"}), 400
+    try:
+        target_ts = int(float(ts_arg))
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid timestamp parameter"}), 400
+
+    entry = get_entry_nearest_timestamp(target_ts)
+    if not entry:
+        return jsonify({"entry": None})
+    return jsonify({"entry": _entry_to_dict(entry)})
+
+
 @app.route("/api/search")
 def api_search():
     """REST API endpoint returning paginated search results as JSON with filter support."""
@@ -718,15 +817,55 @@ def api_resume():
     return redirect(request.referrer or "/")
 
 
-@app.route("/static/<filename>")
+@app.route("/screenshot/<filename>")
 def serve_image(filename):
-    """Serves WebP screenshot files safely from the application screenshots directory."""
-    return send_from_directory(screenshots_path, filename)
+    """Serves WebP screenshot files safely from active and historical appdata locations."""
+    import os
+    from openrecall.config import get_appdata_folder, screenshots_path
+
+    active_file = os.path.join(screenshots_path, filename)
+    if os.path.exists(active_file):
+        return send_from_directory(screenshots_path, filename)
+
+    try:
+        default_folder = get_appdata_folder()
+        default_screenshots = os.path.join(default_folder, "screenshots")
+        if os.path.normpath(default_screenshots) != os.path.normpath(screenshots_path):
+            hist_file = os.path.join(default_screenshots, filename)
+            if os.path.exists(hist_file):
+                return send_from_directory(default_screenshots, filename)
+    except Exception:
+        pass
+
+    return jsonify({"error": "Screenshot file not found"}), 404
+
+
+@app.route("/static/<filename>")
+def serve_static_legacy(filename):
+    """Legacy static route fallback for screenshot images."""
+    if filename.endswith(".webp"):
+        return serve_image(filename)
+    return send_from_directory(app.static_folder or screenshots_path, filename)
 
 
 def main():
+    from openrecall.config import args
+    from openrecall.platform import get_platform_provider
+
     create_db()
     print(f"Appdata folder: {appdata_folder}")
+
+    if getattr(args, "enable_autostart", False):
+        if get_platform_provider().enable_startup():
+            print("Successfully enabled system autostart.")
+        else:
+            print("Failed to enable system autostart.")
+
+    if getattr(args, "disable_autostart", False):
+        if get_platform_provider().disable_startup():
+            print("Successfully disabled system autostart.")
+        else:
+            print("Failed to disable system autostart.")
 
     # 1. Run startup storage maintenance & orphan reconciliation
     print("Running startup storage reconciliation...")
