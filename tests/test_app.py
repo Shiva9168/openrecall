@@ -251,6 +251,84 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertEqual(data["entry"]["timestamp"], self.now)
             self.assertIn("/screenshot/", data["entry"]["image_url"])
 
+    def test_api_timeline_index_discrete_navigation(self):
+        """Phase 8.1: Verifies GET /api/timeline/index returns lightweight ordered list of actual captures."""
+        with patch("openrecall.database.db_path", self.db_path):
+            # Insert irregular captures
+            insert_entry("Gap test 1", self.now + 600, target_path=self.db_path)
+            insert_entry("Gap test 2", self.now + 1500, target_path=self.db_path)
+
+            res = self.client.get("/api/timeline/index")
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+
+            self.assertEqual(data["count"], 3)
+            captures = data["captures"]
+            self.assertEqual(captures[0]["timestamp"], self.now)
+            self.assertEqual(captures[1]["timestamp"], self.now + 600)
+            self.assertEqual(captures[2]["timestamp"], self.now + 1500)
+
+    def test_relative_custom_storage_path_resolution_and_screenshot_serving(self):
+        """Phase 8.1: Verifies relative custom --storage-path creates WebP and serves via /screenshot/ without 404."""
+        custom_dir = tempfile.TemporaryDirectory()
+        rel_path = os.path.relpath(custom_dir.name)
+        abs_storage = os.path.abspath(rel_path)
+        abs_screenshots = os.path.join(abs_storage, "screenshots")
+        abs_db = os.path.join(abs_storage, "recall.db")
+        os.makedirs(abs_screenshots, exist_ok=True)
+
+        create_db(abs_db)
+        ts = self.now + 3000
+        img_name = f"{ts}_0.webp"
+        test_img_path = os.path.join(abs_screenshots, img_name)
+
+        # Create physical WebP file
+        from openrecall.screenshot import write_screenshot_bytes
+        write_screenshot_bytes(b"RIFF\x14\x00\x00\x00WEBPVP8 \x08\x00\x00\x00\x00\x00\x00\x00", test_img_path)
+
+        insert_entry("Custom storage entry", ts, image_path=img_name, target_path=abs_db)
+
+        with patch("openrecall.config.screenshots_path", abs_screenshots), \
+             patch("openrecall.config.db_path", abs_db):
+            res = self.client.get(f"/screenshot/{img_name}")
+            self.assertEqual(res.status_code, 200)
+
+        custom_dir.cleanup()
+
+    def test_path_traversal_defense_on_screenshot_route(self):
+        """Phase 8.1: Verifies path traversal payloads in /screenshot/ are blocked with 400 or 404."""
+        traversal_payloads = [
+            "../recall.db",
+            "..%2frecall.db",
+            "....//....//etc/passwd",
+            ".hidden_file",
+        ]
+        for payload in traversal_payloads:
+            res = self.client.get(f"/screenshot/{payload}")
+            self.assertIn(res.status_code, [400, 404])
+
+    def test_large_history_performance_benchmark(self):
+        """Phase 8.1: Verifies timeline index lookup performance on a synthetic dataset of 500+ entries."""
+        bench_dir = tempfile.TemporaryDirectory()
+        bench_db = os.path.join(bench_dir.name, "bench.db")
+        create_db(bench_db)
+
+        base_ts = 1700000000
+        for i in range(500):
+            insert_entry(f"Bench text {i}", base_ts + (i * 10), target_path=bench_db)
+
+        start_time = time.time()
+        with patch("openrecall.database.db_path", bench_db):
+            res = self.client.get("/api/timeline/index")
+            self.assertEqual(res.status_code, 200)
+            data = res.get_json()
+            self.assertEqual(data["count"], 500)
+        duration = time.time() - start_time
+
+        # Index retrieval must complete in sub-100ms
+        self.assertLess(duration, 0.100)
+        bench_dir.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

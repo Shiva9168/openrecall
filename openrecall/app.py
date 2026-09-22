@@ -17,6 +17,7 @@ from openrecall.database import (
     get_entry_nearest_timestamp,
     get_recent_entries,
     get_timeline_bounds,
+    get_timeline_captures_index,
     get_timeline_entries,
     get_timestamps,
     get_total_entries_count,
@@ -320,9 +321,8 @@ def timeline():
             total_count=total_count,
         )
 
-    # Default: Timeline mode with Range Slider
+    # Default: Timeline mode with Discrete Range Slider
     latest_ts = bounds.get("latest_ts")
-    earliest_ts = bounds.get("earliest_ts")
     latest_entry = get_entry_nearest_timestamp(latest_ts) if latest_ts is not None else None
 
     return render_template_string(
@@ -330,36 +330,39 @@ def timeline():
 {% extends "base_template" %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-3">
-  <h4 class="mb-0 font-weight-bold">Timeline History</h4>
+  <h4 class="mb-0 font-weight-bold text-dark">Timeline History</h4>
   <div class="btn-group">
-    <a href="/?mode=timeline" class="btn btn-primary btn-sm">Timeline View</a>
+    <a href="/" class="btn btn-primary btn-sm font-weight-bold">Timeline View</a>
     <a href="/?mode=gallery" class="btn btn-outline-primary btn-sm">Gallery Grid</a>
   </div>
 </div>
 
 {% if total_count > 0 and latest_entry %}
-  <div class="card card-body bg-white shadow-sm border-0 mb-4 p-4">
+  <div class="card card-body bg-white shadow-sm border-0 mb-4 p-4 rounded-lg">
     <div class="d-flex justify-content-between align-items-center mb-3">
       <h5 id="timelineTimeLabel" class="font-weight-bold text-primary mb-0">
         {{ latest_entry.timestamp | timestamp_to_human_readable }}
       </h5>
-      <span class="text-muted small">Total Captures: {{ total_count }}</span>
+      <span id="timelineCounter" class="badge badge-app p-2">
+        Capture {{ total_count }} of {{ total_count }}
+      </span>
     </div>
 
-    <!-- Timeline Horizontal Range Slider -->
-    <div class="mb-4">
-      <input type="range" class="form-range w-100" id="timelineSlider"
-             min="{{ earliest_ts }}" max="{{ latest_ts }}" value="{{ latest_ts }}"
+    <!-- Timeline Discrete Range Slider -->
+    <div class="mb-3">
+      <input type="range" class="custom-range w-100" id="timelineSlider"
+             min="0" max="{{ total_count - 1 }}" value="{{ total_count - 1 }}" step="1"
              style="width: 100%; cursor: pointer;">
       <div class="d-flex justify-content-between text-muted small mt-1">
-        <span>Oldest: {{ earliest_ts | timestamp_to_human_readable }}</span>
-        <span>Present: {{ latest_ts | timestamp_to_human_readable }}</span>
+        <span>Oldest Capture</span>
+        <span class="text-secondary"><small>Use &larr; / &rarr; arrow keys to step frame-by-frame</small></span>
+        <span>Latest Capture</span>
       </div>
     </div>
 
     <!-- Single Screenshot Image Display -->
     <div class="card border-0 shadow-sm overflow-hidden bg-dark text-center p-2 mb-3">
-      <a id="timelineImgLink" href="/capture/{{ latest_entry.id }}">
+      <a id="timelineImgLink" href="/capture/{{ latest_entry.id }}" title="Click for details">
         <img id="timelineImg" src="/screenshot/{{ latest_entry.image_path or (latest_entry.timestamp|string + '_0.webp') }}"
              class="img-fluid rounded" style="max-height: 65vh; width: auto; margin: 0 auto;" alt="Timeline Capture">
       </a>
@@ -375,40 +378,95 @@ def timeline():
   (function() {
     const slider = document.getElementById('timelineSlider');
     const timeLabel = document.getElementById('timelineTimeLabel');
+    const counterLabel = document.getElementById('timelineCounter');
     const img = document.getElementById('timelineImg');
     const imgLink = document.getElementById('timelineImgLink');
     const snippet = document.getElementById('timelineSnippet');
     if (!slider) return;
 
+    let capturesIndex = [];
+    let activeReqId = 0;
     let debounceTimer = null;
 
     function formatTimestamp(ts) {
+      if (!ts) return '';
       const d = new Date(ts * 1000);
       return d.toLocaleString();
     }
 
-    function fetchCaptureAt(ts) {
-      fetch('/api/timeline/at?timestamp=' + ts)
+    function renderCapture(entry) {
+      if (!entry) return;
+      if (timeLabel) timeLabel.innerText = entry.human_time || formatTimestamp(entry.timestamp);
+      if (img) img.src = entry.image_url || ('/screenshot/' + entry.image_path);
+      if (imgLink) imgLink.href = '/capture/' + entry.id;
+      if (snippet) snippet.innerText = entry.text || entry.text_snippet || 'No OCR text extracted for this capture.';
+    }
+
+    function fetchCaptureForIndex(idx) {
+      if (!capturesIndex || capturesIndex.length === 0) return;
+      const reqId = ++activeReqId;
+      const item = capturesIndex[idx];
+      if (!item) return;
+
+      fetch('/api/timeline/at?timestamp=' + item.timestamp)
         .then(res => res.json())
         .then(data => {
+          if (reqId !== activeReqId) return; // Stale request protection
           if (data && data.entry) {
-            const e = data.entry;
-            if (timeLabel) timeLabel.innerText = e.human_time || formatTimestamp(e.timestamp);
-            if (img) img.src = e.image_url || ('/screenshot/' + e.image_path);
-            if (imgLink) imgLink.href = '/capture/' + e.id;
-            if (snippet) snippet.innerText = e.text || e.text_snippet || 'No OCR text extracted for this capture.';
+            renderCapture(data.entry);
           }
         })
         .catch(err => console.error(err));
     }
 
-    slider.addEventListener('input', function() {
-      const val = parseInt(this.value, 10);
-      if (timeLabel) timeLabel.innerText = formatTimestamp(val);
+    function updateSliderPosition(idx) {
+      if (!capturesIndex || capturesIndex.length === 0) return;
+      const boundedIdx = Math.max(0, Math.min(idx, capturesIndex.length - 1));
+      const item = capturesIndex[boundedIdx];
+      if (item) {
+        if (timeLabel) timeLabel.innerText = formatTimestamp(item.timestamp);
+        if (counterLabel) counterLabel.innerText = 'Capture ' + (boundedIdx + 1) + ' of ' + capturesIndex.length;
+      }
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(function() {
-        fetchCaptureAt(val);
-      }, 100);
+        fetchCaptureForIndex(boundedIdx);
+      }, 80);
+    }
+
+    // Fetch capture index list on load
+    fetch('/api/timeline/index')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.captures && data.captures.length > 0) {
+          capturesIndex = data.captures;
+          slider.max = capturesIndex.length - 1;
+          slider.value = capturesIndex.length - 1;
+          updateSliderPosition(capturesIndex.length - 1);
+        }
+      })
+      .catch(err => console.error(err));
+
+    slider.addEventListener('input', function() {
+      const val = parseInt(this.value, 10);
+      updateSliderPosition(val);
+    });
+
+    // Keyboard Arrow navigation
+    document.addEventListener('keydown', function(e) {
+      if (!slider || !capturesIndex || capturesIndex.length === 0) return;
+      if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) return;
+      let val = parseInt(slider.value, 10);
+      if (e.key === 'ArrowLeft') {
+        if (val > 0) {
+          slider.value = val - 1;
+          updateSliderPosition(val - 1);
+        }
+      } else if (e.key === 'ArrowRight') {
+        if (val < capturesIndex.length - 1) {
+          slider.value = val + 1;
+          updateSliderPosition(val + 1);
+        }
+      }
     });
   })();
   </script>
@@ -454,8 +512,6 @@ def timeline():
 {% endblock %}
 """,
         total_count=total_count,
-        earliest_ts=earliest_ts,
-        latest_ts=latest_ts,
         latest_entry=latest_entry,
     )
 
@@ -757,6 +813,16 @@ def api_timeline_at():
     return jsonify({"entry": _entry_to_dict(entry)})
 
 
+@app.route("/api/timeline/index")
+def api_timeline_index():
+    """REST API endpoint returning discrete captures index array for timeline navigation."""
+    items = get_timeline_captures_index()
+    return jsonify({
+        "count": len(items),
+        "captures": items,
+    })
+
+
 @app.route("/api/search")
 def api_search():
     """REST API endpoint returning paginated search results as JSON with filter support."""
@@ -819,21 +885,27 @@ def api_resume():
 
 @app.route("/screenshot/<filename>")
 def serve_image(filename):
-    """Serves WebP screenshot files safely from active and historical appdata locations."""
+    """Serves WebP screenshot files safely from normalized absolute active and historical appdata locations."""
     import os
     from openrecall.config import get_appdata_folder, screenshots_path
 
-    active_file = os.path.join(screenshots_path, filename)
+    # Sanitize input filename to prevent directory traversal
+    safe_filename = os.path.basename(filename)
+    if not safe_filename or safe_filename != filename or safe_filename.startswith("."):
+        return jsonify({"error": "Invalid screenshot filename"}), 400
+
+    active_dir = os.path.abspath(screenshots_path)
+    active_file = os.path.join(active_dir, safe_filename)
     if os.path.exists(active_file):
-        return send_from_directory(screenshots_path, filename)
+        return send_from_directory(active_dir, safe_filename)
 
     try:
-        default_folder = get_appdata_folder()
-        default_screenshots = os.path.join(default_folder, "screenshots")
-        if os.path.normpath(default_screenshots) != os.path.normpath(screenshots_path):
-            hist_file = os.path.join(default_screenshots, filename)
+        default_folder = os.path.abspath(get_appdata_folder())
+        default_screenshots = os.path.abspath(os.path.join(default_folder, "screenshots"))
+        if os.path.normpath(default_screenshots) != os.path.normpath(active_dir):
+            hist_file = os.path.join(default_screenshots, safe_filename)
             if os.path.exists(hist_file):
-                return send_from_directory(default_screenshots, filename)
+                return send_from_directory(default_screenshots, safe_filename)
     except Exception:
         pass
 

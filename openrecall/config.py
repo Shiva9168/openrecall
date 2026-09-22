@@ -96,22 +96,23 @@ def get_appdata_folder(app_name="openrecall"):
     else:
         home = os.path.expanduser("~")
         path = os.path.join(home, ".local", "share", app_name)
-    if not os.path.exists(path):
-        os.makedirs(path)
-    return path
+    abs_path = os.path.abspath(os.path.normpath(path))
+    if not os.path.exists(abs_path):
+        os.makedirs(abs_path, exist_ok=True)
+    return abs_path
 
 
 if args and args.storage_path:
-    appdata_folder = args.storage_path
-    screenshots_path = os.path.join(appdata_folder, "screenshots")
-    db_path = os.path.join(appdata_folder, "recall.db")
+    appdata_folder = os.path.abspath(os.path.expanduser(os.path.normpath(args.storage_path)))
+    screenshots_path = os.path.abspath(os.path.join(appdata_folder, "screenshots"))
+    db_path = os.path.abspath(os.path.join(appdata_folder, "recall.db"))
 else:
-    appdata_folder = get_appdata_folder()
-    db_path = os.path.join(appdata_folder, "recall.db")
-    screenshots_path = os.path.join(appdata_folder, "screenshots")
+    appdata_folder = os.path.abspath(get_appdata_folder())
+    db_path = os.path.abspath(os.path.join(appdata_folder, "recall.db"))
+    screenshots_path = os.path.abspath(os.path.join(appdata_folder, "screenshots"))
 
 if not os.path.exists(screenshots_path):
     try:
-        os.makedirs(screenshots_path)
+        os.makedirs(screenshots_path, exist_ok=True)
     except Exception:
         pass
