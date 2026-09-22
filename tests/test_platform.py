@@ -123,6 +123,49 @@ class TestPlatformAbstractions(unittest.TestCase):
             self.assertEqual(len(shots), 1)
             self.assertEqual(shots[0].shape, (10, 10, 3))
 
+    def test_windows_autostart_winreg_mocked(self):
+        mock_winreg = MagicMock()
+        mock_key = MagicMock()
+        mock_winreg.OpenKey.return_value = mock_key
+        mock_winreg.QueryValueEx.return_value = ("openrecall", 1)
+
+        with patch.dict(sys.modules, {"winreg": mock_winreg}):
+            win_provider = WindowsPlatformProvider()
+            self.assertTrue(win_provider.enable_startup())
+            self.assertTrue(win_provider.is_startup_enabled())
+            self.assertTrue(win_provider.disable_startup())
+
+        mock_winreg.SetValueEx.assert_called_once()
+        mock_winreg.DeleteValue.assert_called_once()
+
+    def test_macos_autostart_launchagent_mocked(self):
+        mac_provider = MacOSPlatformProvider()
+
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", MagicMock()), \
+             patch("os.makedirs"):
+            self.assertTrue(mac_provider.is_startup_enabled())
+            self.assertTrue(mac_provider.enable_startup())
+
+        with patch("os.path.exists", return_value=True), \
+             patch("os.remove") as mock_remove:
+            self.assertTrue(mac_provider.disable_startup())
+            mock_remove.assert_called_once()
+
+    def test_linux_autostart_desktop_entry_mocked(self):
+        linux_provider = LinuxPlatformProvider()
+
+        with patch("os.path.exists", return_value=True), \
+             patch("builtins.open", MagicMock()), \
+             patch("os.makedirs"):
+            self.assertTrue(linux_provider.is_startup_enabled())
+            self.assertTrue(linux_provider.enable_startup())
+
+        with patch("os.path.exists", return_value=True), \
+             patch("os.remove") as mock_remove:
+            self.assertTrue(linux_provider.disable_startup())
+            mock_remove.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

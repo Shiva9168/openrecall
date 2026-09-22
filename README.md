@@ -51,31 +51,38 @@ OpenRecall offers several key advantages over closed-source alternatives:
 
 
 
-| Feature          | OpenRecall                    | Windows Recall                                  | Rewind.ai                              |
-|------------------|-------------------------------|--------------------------------------------------|----------------------------------------|
-| Transparency     | Open-source                   | Closed-source                                    | Closed-source                          |
-| Supported Hardware | All                         | Copilot+ certified Windows hardware              | M1/M2 Apple Silicon                    |
-| OS Support       | Windows, macOS, Linux         | Windows                                          | macOS                                  |
-| Privacy          | On-device, self-hosted        | Microsoft's privacy policy applies               | Connected to ChatGPT                   |
-| Cost             | Free                          | Part of Windows 11 (requires specialized hardware) | Monthly subscription                   |
+## Platform & Operating System Support
 
-## Quick links
-- [Roadmap](https://github.com/orgs/openrecall/projects/2) and you can [vote for your favorite features](https://github.com/openrecall/openrecall/discussions/9#discussion-6775473)
-- [FAQ](https://github.com/openrecall/openrecall/wiki/FAQ)
+OpenRecall is built using modular platform abstraction providers:
+
+- **Linux (X11)**: Fully supported. Automatic screen capture, multi-monitor enumeration, active application name, window title tracking via `xprop`, and autostart via XDG (`~/.config/autostart`).
+- **Linux (Wayland)**: Supported with known limitations. Screen capture operates via XWayland where supported. Security restrictions under pure Wayland mean active application name and window title degrade gracefully to `Unknown App` / `Untitled Window`.
+- **Windows (10 / 11)**: Supported. Multi-monitor GDI screen capture, active window title and process tracking via `pywin32`, and autostart via Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
+- **macOS**: Supported. Multi-monitor Quartz screen capture, active application and window title tracking via `pyobjc`, and autostart via LaunchAgent (`~/Library/LaunchAgents/com.openrecall.app.plist`). *Note*: macOS 10.15+ requires granting Screen Recording permission in System Settings.
+
+### Offline & Local-First Operation
+OpenRecall is 100% offline-first. All OCR, frame diffing, SQLite search, and Web UI styling operate locally on your machine without external CDN network dependencies or cloud API calls.
+
+### Optional Local OCR (Tesseract)
+Tesseract OCR is an optional system dependency. If installed and present on your system `PATH`, OpenRecall automatically extracts text from captures. If Tesseract is not installed, OpenRecall degrades gracefully and continues recording visual history without text extraction.
 
 ## Get Started
 
 ### Prerequisites
-- Python 3.11
-- MacOSX/Windows/Linux
-- Git
+- Python 3.9+
+- Linux, Windows 10/11, or macOS
+- Tesseract OCR (Optional)
 
 To install:
 ```
-python3 -m pip install --upgrade --no-cache-dir git+https://github.com/openrecall/openrecall.git
+python3 -m pip install --upgrade openrecall
 ```
 
 To run:
+```
+openrecall
+```
+or:
 ```
 python3 -m openrecall.app
 ```
@@ -85,7 +92,9 @@ Open your browser to:
 ## Arguments
 `--storage-path` (default: user data path for your OS): allows you to specify the path where the screenshots and database should be stored. We recommend [creating an encrypted volume](docs/encryption.md) to store your data.
 
-`--primary-monitor-only` (default: False): only record the primary monitor (rather than individual screenshots for other monitors)
+`--primary-monitor-only` (default: False): only record the primary monitor (rather than individual screenshots for other monitors).
+
+`--max-storage-gb` (default: 0 / disabled): maximum referenced screenshot storage capacity limit in Gigabytes (e.g. `--max-storage-gb 5.0`).
 
 ## Uninstall instructions
 
