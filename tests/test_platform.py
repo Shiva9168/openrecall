@@ -117,7 +117,7 @@ class TestPlatformAbstractions(unittest.TestCase):
         mock_mss_context = MagicMock()
         mock_mss_context.__enter__.return_value = mock_sct_instance
 
-        with patch("mss.mss", return_value=mock_mss_context):
+        with patch("mss.MSS", return_value=mock_mss_context):
             provider = MSSScreenCaptureProvider()
             shots = provider.take_screenshots(primary_only=True)
             self.assertEqual(len(shots), 1)

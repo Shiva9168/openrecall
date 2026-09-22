@@ -119,7 +119,7 @@ class MSSScreenCaptureProvider(ScreenCaptureProvider):
     def take_screenshots(self, primary_only: bool = False) -> List[np.ndarray]:
         screenshots: List[np.ndarray] = []
         try:
-            with mss.mss() as sct:
+            with mss.MSS() as sct:
                 monitor_indices = [1] if primary_only else range(1, len(sct.monitors))
                 for idx in monitor_indices:
                     if idx < len(sct.monitors):
