@@ -12,3 +12,4 @@ build
 .aider*
 .md/
 uv.lock
+scratch/

@@ -16,9 +16,9 @@ import numpy as np
 
 from openrecall.config import db_path, screenshots_path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
-# Structure of a database entry, preserving legacy fields and adding path/platform metadata
+# Structure of a database entry, preserving legacy fields and adding path/platform/deletion metadata
 Entry = namedtuple(
     "Entry",
     [
@@ -32,8 +32,9 @@ Entry = namedtuple(
         "thumbnail_path",
         "platform",
         "monitor",
+        "is_deleted",
     ],
-    defaults=(None, None, None, None),
+    defaults=(None, None, None, None, 1, 0),
 )
 
 
@@ -112,7 +113,8 @@ def create_db(target_path: Optional[str] = None) -> None:
                        image_path TEXT,
                        thumbnail_path TEXT,
                        platform TEXT,
-                       monitor INTEGER DEFAULT 1
+                       monitor INTEGER DEFAULT 1,
+                       is_deleted INTEGER NOT NULL DEFAULT 0
                    )"""
             )
 
@@ -124,6 +126,7 @@ def create_db(target_path: Optional[str] = None) -> None:
                 ("thumbnail_path", "TEXT"),
                 ("platform", "TEXT"),
                 ("monitor", "INTEGER DEFAULT 1"),
+                ("is_deleted", "INTEGER NOT NULL DEFAULT 0"),
             ]:
                 if col_name not in existing_cols:
                     cursor.execute(f"ALTER TABLE entries ADD COLUMN {col_name} {col_type}")
@@ -138,6 +141,9 @@ def create_db(target_path: Optional[str] = None) -> None:
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_title ON entries (title)"
             )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_active_timestamp ON entries (is_deleted, timestamp)"
+            )
 
             # 3. Create SQLite FTS5 table with unicode61 tokenizer
             cursor.execute(
@@ -151,32 +157,40 @@ def create_db(target_path: Optional[str] = None) -> None:
                    )"""
             )
 
+            # 4. Explicitly drop and re-create automatic synchronization triggers for FTS5
+            cursor.execute("DROP TRIGGER IF EXISTS entries_ai;")
+            cursor.execute("DROP TRIGGER IF EXISTS entries_ad;")
+            cursor.execute("DROP TRIGGER IF EXISTS entries_au;")
 
-            # 4. Create automatic synchronization triggers
             cursor.execute(
-                """CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
+                """CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
                        INSERT INTO entries_fts(rowid, text, app, title)
-                       VALUES (new.id, new.text, new.app, new.title);
+                       SELECT new.id, new.text, new.app, new.title
+                       WHERE new.is_deleted = 0;
                    END;"""
             )
             cursor.execute(
-                """CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+                """CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
                        INSERT INTO entries_fts(entries_fts, rowid, text, app, title)
                        VALUES('delete', old.id, old.text, old.app, old.title);
                    END;"""
             )
             cursor.execute(
-                """CREATE TRIGGER IF NOT EXISTS entries_au AFTER UPDATE ON entries BEGIN
+                """CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
                        INSERT INTO entries_fts(entries_fts, rowid, text, app, title)
                        VALUES('delete', old.id, old.text, old.app, old.title);
                        INSERT INTO entries_fts(rowid, text, app, title)
-                       VALUES (new.id, new.text, new.app, new.title);
+                       SELECT new.id, new.text, new.app, new.title
+                       WHERE new.is_deleted = 0;
                    END;"""
             )
 
-            # 5. Populate/rebuild FTS5 index for all entries
+            # 5. Populate/rebuild FTS5 index for all entries and purge tombstones
             cursor.execute("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
-
+            cursor.execute(
+                """INSERT INTO entries_fts(entries_fts, rowid, text, app, title)
+                   SELECT 'delete', id, text, app, title FROM entries WHERE is_deleted = 1"""
+            )
 
             # 6. Set version stamp
             cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -237,6 +251,7 @@ def _row_to_entry(row: sqlite3.Row) -> Entry:
         thumbnail_path=row["thumbnail_path"] if "thumbnail_path" in keys else None,
         platform=row["platform"] if "platform" in keys else None,
         monitor=row["monitor"] if "monitor" in keys else 1,
+        is_deleted=row["is_deleted"] if "is_deleted" in keys else 0,
     )
 
 
@@ -263,8 +278,8 @@ def insert_entry(
         with get_db_connection(path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """INSERT INTO entries (text, timestamp, embedding, app, title, image_path, thumbnail_path, platform, monitor)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """INSERT INTO entries (text, timestamp, embedding, app, title, image_path, thumbnail_path, platform, monitor, is_deleted)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
                    ON CONFLICT(timestamp) DO NOTHING""",
                 (
                     text,
@@ -291,7 +306,7 @@ def get_recent_entries(
     offset: int = 0,
     target_path: Optional[str] = None,
 ) -> List[Entry]:
-    """Retrieves a paginated list of entries ordered descending by timestamp."""
+    """Retrieves a paginated list of active entries ordered descending by timestamp."""
     path = target_path or db_path
     safe_limit = min(max(1, limit), 500)
     safe_offset = max(0, offset)
@@ -301,8 +316,9 @@ def get_recent_entries(
         with get_db_connection(path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor
+                """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor, is_deleted
                    FROM entries
+                   WHERE is_deleted = 0
                    ORDER BY timestamp DESC
                    LIMIT ? OFFSET ?""",
                 (safe_limit, safe_offset),
@@ -324,7 +340,7 @@ def get_timestamps(
     offset: int = 0,
     target_path: Optional[str] = None,
 ) -> List[int]:
-    """Retrieves paginated timestamps ordered descending."""
+    """Retrieves paginated timestamps of active entries ordered descending."""
     path = target_path or db_path
     safe_limit = min(max(1, limit), 10000)
     safe_offset = max(0, offset)
@@ -334,7 +350,7 @@ def get_timestamps(
         with get_db_connection(path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT timestamp FROM entries ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                "SELECT timestamp FROM entries WHERE is_deleted = 0 ORDER BY timestamp DESC LIMIT ? OFFSET ?",
                 (safe_limit, safe_offset),
             )
             rows = cursor.fetchall()
@@ -345,7 +361,7 @@ def get_timestamps(
 
 
 def get_available_apps(target_path: Optional[str] = None) -> List[str]:
-    """Retrieves a sorted list of unique non-empty application names recorded in the database."""
+    """Retrieves a sorted list of unique non-empty application names recorded in active entries."""
     path = target_path or db_path
     apps: List[str] = []
 
@@ -353,7 +369,7 @@ def get_available_apps(target_path: Optional[str] = None) -> List[str]:
         with get_db_connection(path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT DISTINCT app FROM entries WHERE app IS NOT NULL AND app != '' ORDER BY app ASC"
+                "SELECT DISTINCT app FROM entries WHERE is_deleted = 0 AND app IS NOT NULL AND app != '' ORDER BY app ASC"
             )
             rows = cursor.fetchall()
             apps = [row["app"] for row in rows if row["app"]]
@@ -363,13 +379,13 @@ def get_available_apps(target_path: Optional[str] = None) -> List[str]:
 
 
 def get_entry_by_id(entry_id: int, target_path: Optional[str] = None) -> Optional[Entry]:
-    """Retrieves a single entry by its unique integer database ID."""
+    """Retrieves a single raw entry by its database ID (returns record regardless of is_deleted status)."""
     path = target_path or db_path
     try:
         with get_db_connection(path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor
+                """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor, is_deleted
                    FROM entries
                    WHERE id = ?""",
                 (entry_id,),
@@ -382,13 +398,55 @@ def get_entry_by_id(entry_id: int, target_path: Optional[str] = None) -> Optiona
     return None
 
 
-def get_total_entries_count(target_path: Optional[str] = None) -> int:
-    """Returns the total number of records in the entries database table."""
+def get_previous_capture_id(current_timestamp: int, target_path: Optional[str] = None) -> Optional[int]:
+    """Returns the ID of the nearest preceding active/missing capture by timestamp."""
     path = target_path or db_path
     try:
         with get_db_connection(path) as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM entries")
+            cursor.execute(
+                """SELECT id FROM entries
+                   WHERE timestamp < ? AND is_deleted = 0
+                   ORDER BY timestamp DESC
+                   LIMIT 1""",
+                (current_timestamp,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return row["id"]
+    except sqlite3.Error as e:
+        print(f"Database error fetching previous capture ID: {e}")
+    return None
+
+
+def get_next_capture_id(current_timestamp: int, target_path: Optional[str] = None) -> Optional[int]:
+    """Returns the ID of the nearest succeeding active/missing capture by timestamp."""
+    path = target_path or db_path
+    try:
+        with get_db_connection(path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """SELECT id FROM entries
+                   WHERE timestamp > ? AND is_deleted = 0
+                   ORDER BY timestamp ASC
+                   LIMIT 1""",
+                (current_timestamp,),
+            )
+            row = cursor.fetchone()
+            if row:
+                return row["id"]
+    except sqlite3.Error as e:
+        print(f"Database error fetching next capture ID: {e}")
+    return None
+
+
+def get_total_entries_count(target_path: Optional[str] = None) -> int:
+    """Returns the total number of active/missing records in the entries database table."""
+    path = target_path or db_path
+    try:
+        with get_db_connection(path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM entries WHERE is_deleted = 0")
             row = cursor.fetchone()
             return row[0] if row else 0
     except sqlite3.Error as e:
@@ -434,7 +492,7 @@ def get_timeline_bounds(target_path: Optional[str] = None) -> dict:
         try:
             with _connect_readonly_db(p) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts, COUNT(*) as cnt FROM entries")
+                cursor.execute("SELECT MIN(timestamp) as min_ts, MAX(timestamp) as max_ts, COUNT(*) as cnt FROM entries WHERE is_deleted = 0")
                 row = cursor.fetchone()
                 if row and row["cnt"] > 0:
                     if row["min_ts"] is not None:
@@ -462,7 +520,7 @@ def get_timeline_captures_index(target_path: Optional[str] = None) -> List[dict]
         try:
             with _connect_readonly_db(p) as conn:
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, timestamp FROM entries ORDER BY timestamp ASC")
+                cursor.execute("SELECT id, timestamp FROM entries WHERE is_deleted = 0 ORDER BY timestamp ASC")
                 rows = cursor.fetchall()
                 for r in rows:
                     ts = r["timestamp"]
@@ -483,15 +541,15 @@ def get_entry_nearest_timestamp(
     db_paths = _get_historical_db_paths(target_path)
     candidates: List[Entry] = []
 
-    sql_le = """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor
+    sql_le = """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor, is_deleted
                 FROM entries
-                WHERE timestamp <= ?
+                WHERE timestamp <= ? AND is_deleted = 0
                 ORDER BY timestamp DESC
                 LIMIT 1"""
 
-    sql_ge = """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor
+    sql_ge = """SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor, is_deleted
                 FROM entries
-                WHERE timestamp >= ?
+                WHERE timestamp >= ? AND is_deleted = 0
                 ORDER BY timestamp ASC
                 LIMIT 1"""
 
@@ -517,9 +575,6 @@ def get_entry_nearest_timestamp(
     return min(candidates, key=lambda e: abs(e.timestamp - target_ts))
 
 
-
-
-
 def search_entries(
     query: str,
     app: Optional[str] = None,
@@ -543,10 +598,11 @@ def search_entries(
 
             if sanitized_query:
                 sql = """
-                    SELECT e.id, e.app, e.title, e.text, e.timestamp, e.embedding, e.image_path, e.thumbnail_path, e.platform, e.monitor
+                    SELECT e.id, e.app, e.title, e.text, e.timestamp, e.embedding, e.image_path, e.thumbnail_path, e.platform, e.monitor, e.is_deleted
                     FROM entries e
                     JOIN entries_fts fts ON e.id = fts.rowid
                     WHERE entries_fts MATCH ?
+                      AND e.is_deleted = 0
                       AND (? IS NULL OR e.app LIKE ?)
                       AND (? IS NULL OR e.title LIKE ?)
                       AND (? IS NULL OR e.timestamp >= ?)
@@ -588,9 +644,10 @@ def search_entries(
             else:
                 # Metadata-only filter search
                 sql = """
-                    SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor
+                    SELECT id, app, title, text, timestamp, embedding, image_path, thumbnail_path, platform, monitor, is_deleted
                     FROM entries
-                    WHERE (? IS NULL OR app LIKE ?)
+                    WHERE is_deleted = 0
+                      AND (? IS NULL OR app LIKE ?)
                       AND (? IS NULL OR title LIKE ?)
                       AND (? IS NULL OR timestamp >= ?)
                       AND (? IS NULL OR timestamp <= ?)
@@ -633,9 +690,10 @@ def get_timeline_entries(
     entries: List[Entry] = []
 
     sql = """
-        SELECT id, app, title, text, timestamp, NULL as embedding, image_path, thumbnail_path, platform, monitor
+        SELECT id, app, title, text, timestamp, NULL as embedding, image_path, thumbnail_path, platform, monitor, is_deleted
         FROM entries
-        WHERE (? IS NULL OR app LIKE ?)
+        WHERE is_deleted = 0
+          AND (? IS NULL OR app LIKE ?)
           AND (? IS NULL OR title LIKE ?)
           AND (? IS NULL OR timestamp >= ?)
           AND (? IS NULL OR timestamp <= ?)
@@ -728,15 +786,15 @@ def delete_entry_by_id(
     entry_id: int,
     target_path: Optional[str] = None,
     storage_dir: Optional[str] = None,
-) -> bool:
-    """Deletes a single screenshot entry by database ID.
+) -> Optional[bool]:
+    """Soft-deletes a single screenshot entry by database ID (sets is_deleted = 1).
 
     Consistency Model:
-        SQLite deletion is transactional. The SQLite row is deleted inside a transaction,
-        letting the SQLite `entries_ad` trigger synchronize the FTS5 search index.
-        Filesystem cleanup happens AFTER commit and is best-effort. If file deletion fails,
-        the database row remains deleted (not restored), leaving an orphan file for future
-        reconciliation. Repeated calls for an already deleted entry return False deterministically.
+        1. BEGIN SQLite transaction: UPDATE entries SET is_deleted = 1 WHERE id = ? AND is_deleted = 0
+           Trigger entries_au removes the record from entries_fts search index.
+        2. COMMIT transaction. (Record is instantly hidden from UI, timeline, search & navigation).
+        3. ONLY AFTER COMMIT: attempt physical screenshot file deletion (safe path containment).
+           If file deletion fails (e.g. OSError), log warning. Maintenance worker will clean it up later.
 
     Args:
         entry_id: Integer database ID of the entry to delete.
@@ -744,33 +802,42 @@ def delete_entry_by_id(
         storage_dir: Screenshot storage directory path override.
 
     Returns:
-        True if the database entry was found and deleted, False if no entry existed for ID.
+        True: if the capture existed and was soft-deleted (200 OK)
+        False: if the capture was already soft-deleted (410 Gone)
+        None: if the capture ID never existed (404 Not Found)
     """
     path = target_path or db_path
 
-    # Step 1: Retrieve entry metadata (specifically image_path) before deleting
+    # Step 1: Check if entry exists in DB
     entry = get_entry_by_id(entry_id, target_path=path)
-    if not entry:
+    if entry is None:
+        return None
+
+    if getattr(entry, "is_deleted", 0) == 1:
         return False
 
-    # Step 2: Delete SQLite row inside a transaction (trigger entries_ad updates FTS5)
-    row_deleted = False
+    # Step 2: Perform soft-delete in DB transaction
+    row_updated = False
     try:
         with get_db_connection(path) as conn:
             cursor = conn.cursor()
-            cursor.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
+            cursor.execute(
+                "UPDATE entries SET is_deleted = 1 WHERE id = ? AND is_deleted = 0",
+                (entry_id,),
+            )
             conn.commit()
             if cursor.rowcount > 0:
-                row_deleted = True
+                row_updated = True
     except sqlite3.Error as e:
-        print(f"Database error deleting entry ID {entry_id}: {e}")
-        return False
+        print(f"Database error soft-deleting entry ID {entry_id}: {e}")
+        raise
 
-    if not row_deleted:
+    if not row_updated:
         return False
 
     # Step 3: Best-effort filesystem cleanup AFTER commit
-    _safe_remove_image_file(entry.image_path, storage_dir=storage_dir)
+    if entry.image_path:
+        _safe_remove_image_file(entry.image_path, storage_dir=storage_dir)
 
     return True
 
@@ -1104,7 +1171,7 @@ def reconcile_storage_and_database(
             with get_db_connection(path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
-                    "SELECT id, image_path FROM entries WHERE image_path IS NOT NULL AND image_path != ''"
+                    "SELECT id, image_path FROM entries WHERE is_deleted = 0 AND image_path IS NOT NULL AND image_path != ''"
                 )
                 rows = cursor.fetchall()
                 for r in rows:
@@ -1143,7 +1210,7 @@ def reconcile_storage_and_database(
             except (OSError, PermissionError):
                 pass
 
-        # 4. Reconcile orphan WebP files
+        # 4. Reconcile orphan WebP files (files not belonging to active captures)
         orphan_files = physical_files - db_relative_paths
         for orphan_rel in orphan_files:
             abs_p = os.path.normpath(os.path.join(s_dir, orphan_rel))
@@ -1154,29 +1221,11 @@ def reconcile_storage_and_database(
             except (OSError, PermissionError):
                 summary["orphan_files_failed"] += 1
 
-        # 5. Fix missing image DB rows by setting image_path = NULL
-        missing_row_ids = []
+        # 5. Count missing image files without mutating database rows (preserve original stored paths)
         for e_id, norm_rel in db_entries_with_image:
             abs_p = os.path.normpath(os.path.join(s_dir, norm_rel))
             if not os.path.exists(abs_p):
-                missing_row_ids.append(e_id)
-
-        if missing_row_ids:
-            batch_size = 50
-            for i in range(0, len(missing_row_ids), batch_size):
-                chunk = missing_row_ids[i : i + batch_size]
-                try:
-                    with get_db_connection(path) as conn:
-                        cursor = conn.cursor()
-                        placeholders = ",".join(["?"] * len(chunk))
-                        cursor.execute(
-                            f"UPDATE entries SET image_path = NULL WHERE id IN ({placeholders})",
-                            chunk,
-                        )
-                        conn.commit()
-                        summary["missing_image_rows_fixed"] += cursor.rowcount
-                except sqlite3.Error as e:
-                    print(f"Database error updating missing image rows: {e}")
+                summary["missing_image_rows_fixed"] += 1
 
         # 6. Time-based retention
         if cutoff_timestamp is not None:

@@ -85,12 +85,12 @@ base_template = """
           </a>
         </div>
 
-        <!-- Recording Status & Controls -->
+        <!-- Capture Status & Controls -->
         <div class="flex items-center gap-2">
           {% if is_paused %}
-            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200">
+            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200" title="Capturing is paused">
               <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-              <span>Paused</span>
+              <span>Capture Paused</span>
             </span>
             <form action="/api/resume" method="post" class="inline m-0">
               <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors cursor-pointer">
@@ -98,9 +98,9 @@ base_template = """
               </button>
             </form>
           {% else %}
-            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200" title="Capturing is active">
               <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span>Recording</span>
+              <span>Capture Active</span>
             </span>
             <form action="/api/pause" method="post" class="inline m-0">
               <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors cursor-pointer">
@@ -198,9 +198,19 @@ def _parse_date_to_timestamp(date_str: Optional[str], end_of_day: bool = False) 
 
 def _entry_to_dict(entry) -> Dict[str, Any]:
     """Serializes a database Entry into a clean JSON-friendly dictionary."""
+    import openrecall.config as config
     text_val = entry.text or ""
     snippet = text_val[:200] + ("..." if len(text_val) > 200 else "")
-    img_name = entry.image_path or f"{entry.timestamp}_0.webp"
+    img_name = entry.image_path or (f"{entry.timestamp}_0.webp" if entry.timestamp else "Unavailable")
+
+    file_exists = False
+    if entry.image_path:
+        if os.path.isabs(entry.image_path):
+            abs_p = os.path.normpath(entry.image_path)
+        else:
+            abs_p = os.path.normpath(os.path.join(config.screenshots_path, entry.image_path))
+        file_exists = os.path.exists(abs_p)
+
     return {
         "id": entry.id,
         "timestamp": entry.timestamp,
@@ -209,6 +219,8 @@ def _entry_to_dict(entry) -> Dict[str, Any]:
         "title": entry.title or "Unknown Title",
         "image_path": img_name,
         "image_url": f"/screenshot/{img_name}",
+        "file_exists": file_exists,
+        "is_deleted": getattr(entry, "is_deleted", 0),
         "text_snippet": snippet,
         "text": text_val,
         "platform": entry.platform,
@@ -642,10 +654,16 @@ def search():
 
 @app.route("/capture/<int:entry_id>")
 def capture_detail(entry_id: int):
-    """Renders the detailed single-screenshot inspection page with OCR text panel, copy button, and delete action."""
-    from openrecall.database import get_entry_by_id
+    """Renders the detailed single-screenshot inspection page with OCR text panel, path info, and dynamic prev/next navigation."""
+    from openrecall.database import (
+        get_entry_by_id,
+        get_previous_capture_id,
+        get_next_capture_id,
+    )
 
     entry = get_entry_by_id(entry_id)
+
+    # 1. Nonexistent ID -> 404
     if not entry:
         return (
             render_template_string(
@@ -669,6 +687,49 @@ def capture_detail(entry_id: int):
             404,
         )
 
+    # 2. Soft-deleted ID -> 410
+    if getattr(entry, "is_deleted", 0) == 1:
+        return (
+            render_template_string(
+                """
+{% extends "base_template" %}
+{% block content %}
+  <div class="bg-white rounded-xl border border-rose-200 p-8 text-center max-w-md mx-auto my-8 shadow-xs">
+    <div class="w-12 h-12 bg-rose-50 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-3 border border-rose-100">
+      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+      </svg>
+    </div>
+    <h3 class="text-base font-bold text-slate-900 mb-1">Capture Deleted</h3>
+    <p class="text-xs text-slate-500 mb-4">This screen capture has been permanently deleted and is unavailable.</p>
+    <a href="/" class="inline-flex items-center px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition-colors">&larr; Return to Timeline</a>
+  </div>
+{% endblock %}
+""",
+                entry_id=entry_id,
+            ),
+            410,
+        )
+
+    # 3. Resolve image existence and stored paths
+    import openrecall.config as config
+    file_exists = False
+    if entry.image_path:
+        if os.path.isabs(entry.image_path):
+            abs_p = os.path.normpath(entry.image_path)
+            file_path_display = entry.image_path
+        else:
+            abs_p = os.path.normpath(os.path.join(config.screenshots_path, entry.image_path))
+            file_path_display = abs_p
+        file_exists = os.path.exists(abs_p)
+        file_name_display = os.path.basename(entry.image_path)
+    else:
+        file_name_display = "Unavailable"
+        file_path_display = "Unavailable"
+
+    prev_id = get_previous_capture_id(entry.timestamp)
+    next_id = get_next_capture_id(entry.timestamp)
+
     return render_template_string(
         """
 {% extends "base_template" %}
@@ -679,10 +740,17 @@ def capture_detail(entry_id: int):
   </a>
   
   <div class="inline-flex items-center gap-2">
-    {% if entry.id > 1 %}
-      <a href="/capture/{{ entry.id - 1 }}" class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">&larr; Previous</a>
+    {% if prev_id %}
+      <a href="/capture/{{ prev_id }}" class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">&larr; Previous</a>
+    {% else %}
+      <span class="px-3 py-1.5 text-xs font-semibold text-slate-400 bg-slate-100 border border-slate-200 rounded-lg cursor-not-allowed">&larr; Previous</span>
     {% endif %}
-    <a href="/capture/{{ entry.id + 1 }}" class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">Next &rarr;</a>
+
+    {% if next_id %}
+      <a href="/capture/{{ next_id }}" class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">Next &rarr;</a>
+    {% else %}
+      <span class="px-3 py-1.5 text-xs font-semibold text-slate-400 bg-slate-100 border border-slate-200 rounded-lg cursor-not-allowed">Next &rarr;</span>
+    {% endif %}
 
     <!-- Restrained Delete Action Button -->
     <button onclick="toggleDeleteConfirm()" type="button" class="px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors cursor-pointer ml-2">
@@ -691,11 +759,11 @@ def capture_detail(entry_id: int):
   </div>
 </div>
 
-<!-- Inline Delete Confirmation Box (Hidden by Default) -->
+<!-- Inline Delete Confirmation Box -->
 <div id="deleteConfirmCard" class="hidden bg-rose-50 border border-rose-200 rounded-xl p-4 mb-6 text-xs text-rose-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
   <div>
     <h4 class="font-bold text-slate-900 text-sm mb-0.5">Delete this capture?</h4>
-    <p class="text-slate-600">This removes the screenshot file and its database record permanently.</p>
+    <p class="text-slate-600">This removes the screenshot file and soft-deletes its record permanently.</p>
   </div>
   <div class="flex items-center gap-2 shrink-0">
     <button onclick="toggleDeleteConfirm()" type="button" class="px-3 py-1.5 font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer">Cancel</button>
@@ -706,12 +774,26 @@ def capture_detail(entry_id: int):
 </div>
 
 <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-  <!-- Screenshot Display -->
+  <!-- Screenshot Display or Missing File Card -->
   <div class="lg:col-span-8">
-    <div class="bg-slate-950 rounded-xl overflow-hidden p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[400px]">
-      <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
-           class="max-h-[75vh] w-auto h-auto object-contain rounded mx-auto" alt="Full Resolution Screenshot">
-    </div>
+    {% if file_exists %}
+      <div class="bg-slate-950 rounded-xl overflow-hidden p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[400px]">
+        <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}"
+             class="max-h-[75vh] w-auto h-auto object-contain rounded mx-auto" alt="Full Resolution Screenshot">
+      </div>
+    {% else %}
+      <div class="bg-slate-900 rounded-xl overflow-hidden p-8 shadow-inner border border-slate-800 flex flex-col items-center justify-center min-h-[400px] text-center">
+        <div class="w-16 h-16 bg-amber-950/50 text-amber-500 rounded-full flex items-center justify-center mb-4 border border-amber-800/50">
+          <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+          </svg>
+        </div>
+        <h3 class="text-lg font-bold text-amber-400 mb-2">Screenshot file is missing</h3>
+        <p class="text-xs text-slate-300 max-w-md leading-relaxed mb-4">
+          The screenshot file is no longer present at its stored location. The capture metadata and extracted OCR text remain fully available.
+        </p>
+      </div>
+    {% endif %}
   </div>
 
   <!-- Metadata & Extracted Text -->
@@ -734,8 +816,12 @@ def capture_detail(entry_id: int):
           <dd class="text-slate-700 font-mono mt-0.5">#{{ entry.id }}</dd>
         </div>
         <div>
+          <dt class="text-slate-400 font-medium">File Name</dt>
+          <dd class="text-slate-700 font-mono text-[11px] truncate mt-0.5" title="{{ file_name_display }}">{{ file_name_display }}</dd>
+        </div>
+        <div>
           <dt class="text-slate-400 font-medium">File Path</dt>
-          <dd class="text-slate-600 font-mono text-[11px] truncate mt-0.5" title="{{ entry.image_path }}">{{ entry.image_path }}</dd>
+          <dd class="text-slate-600 font-mono text-[11px] truncate mt-0.5" title="{{ file_path_display }}">{{ file_path_display }}</dd>
         </div>
       </dl>
 
@@ -778,6 +864,11 @@ function toggleDeleteConfirm() {
 {% endblock %}
 """,
         entry=entry,
+        file_exists=file_exists,
+        file_name_display=file_name_display,
+        file_path_display=file_path_display,
+        prev_id=prev_id,
+        next_id=next_id,
     )
 
 
@@ -789,18 +880,22 @@ def api_capture_detail(entry_id: int):
     entry = get_entry_by_id(entry_id)
     if not entry:
         return jsonify({"error": "Capture not found", "entry_id": entry_id}), 404
+    if getattr(entry, "is_deleted", 0) == 1:
+        return jsonify({"error": "Capture deleted", "entry_id": entry_id}), 410
     return jsonify(_entry_to_dict(entry))
 
 
 @app.route("/api/capture/<int:entry_id>/delete", methods=["POST", "DELETE"])
 def api_delete_capture(entry_id: int):
-    """REST API endpoint to safely delete a single capture entry and its WebP screenshot file from disk."""
-    success = delete_entry_by_id(entry_id)
-    if not success:
-        return jsonify({"error": "Capture not found or deletion failed", "id": entry_id}), 404
+    """REST API endpoint to safely soft-delete a single capture entry and remove WebP screenshot file from disk."""
+    result = delete_entry_by_id(entry_id)
+    if result is None:
+        return jsonify({"error": "Capture not found", "id": entry_id}), 404
+    if result is False:
+        return jsonify({"error": "Capture already deleted", "id": entry_id}), 410
 
     if request.is_json or request.headers.get("Accept") == "application/json" or request.args.get("format") == "json":
-        return jsonify({"status": "deleted", "id": entry_id})
+        return jsonify({"status": "success", "id": entry_id})
     return redirect("/")
 
 

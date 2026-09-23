@@ -211,12 +211,12 @@ class TestAppRoutesPhase6A(unittest.TestCase):
         with patch("openrecall.database.db_path", self.db_path):
             policy.resume()
             res_active = self.client.get("/")
-            self.assertIn("Recording", res_active.get_data(as_text=True))
+            self.assertIn("Capture Active", res_active.get_data(as_text=True))
             self.assertIn("/api/pause", res_active.get_data(as_text=True))
 
             policy.pause()
             res_paused = self.client.get("/")
-            self.assertIn("Paused", res_paused.get_data(as_text=True))
+            self.assertIn("Capture Paused", res_paused.get_data(as_text=True))
             self.assertIn("/api/resume", res_paused.get_data(as_text=True))
 
             policy.resume()
@@ -414,11 +414,11 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             # Perform POST delete
             res_delete = self.client.post(f"/api/capture/{entry_id}/delete", json={})
             self.assertEqual(res_delete.status_code, 200)
-            self.assertEqual(res_delete.get_json(), {"status": "deleted", "id": entry_id})
+            self.assertEqual(res_delete.get_json(), {"status": "success", "id": entry_id})
 
-            # 1. DB record gone
+            # 1. DB record soft-deleted (detail returns 410)
             res_detail = self.client.get(f"/api/capture/{entry_id}")
-            self.assertEqual(res_detail.status_code, 404)
+            self.assertEqual(res_detail.status_code, 410)
 
             # 2. WebP screenshot file deleted on disk
             self.assertFalse(os.path.exists(img_file_path))

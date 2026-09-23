@@ -63,8 +63,10 @@ class TestRetentionPhase2E1(unittest.TestCase):
         res = delete_entry_by_id(entry_id, target_path=self.db_path, storage_dir=self.img_dir)
         self.assertTrue(res)
 
-        # Verify database row removed
-        self.assertIsNone(get_entry_by_id(entry_id, target_path=self.db_path))
+        # Verify database row tombstoned
+        del_entry = get_entry_by_id(entry_id, target_path=self.db_path)
+        self.assertIsNotNone(del_entry)
+        self.assertEqual(del_entry.is_deleted, 1)
 
         # Verify image file removed
         self.assertFalse(os.path.exists(os.path.join(self.img_dir, img_name)))
@@ -88,7 +90,9 @@ class TestRetentionPhase2E1(unittest.TestCase):
         # Should succeed cleanly without unhandled exceptions
         res = delete_entry_by_id(entry_id, target_path=self.db_path, storage_dir=self.img_dir)
         self.assertTrue(res)
-        self.assertIsNone(get_entry_by_id(entry_id, target_path=self.db_path))
+        e = get_entry_by_id(entry_id, target_path=self.db_path)
+        self.assertIsNotNone(e)
+        self.assertEqual(e.is_deleted, 1)
 
     def test_repeated_deletion_idempotency(self):
         img_name = self._create_sample_file("shot_102.webp")
@@ -193,7 +197,9 @@ class TestRetentionPhase2E1(unittest.TestCase):
             res = delete_entry_by_id(entry_id, target_path=self.db_path, storage_dir=self.img_dir)
             # DB deletion succeeds even though file removal failed
             self.assertTrue(res)
-            self.assertIsNone(get_entry_by_id(entry_id, target_path=self.db_path))
+            e = get_entry_by_id(entry_id, target_path=self.db_path)
+            self.assertIsNotNone(e)
+            self.assertEqual(e.is_deleted, 1)
 
     def test_fts5_indexing_after_retention_purge(self):
         insert_entry(text="Keep this alpha data", timestamp=1000, target_path=self.db_path)

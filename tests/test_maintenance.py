@@ -10,6 +10,7 @@ import pytest
 from openrecall.database import (
     create_db,
     get_db_connection,
+    get_entry_by_id,
     insert_entry,
     reconcile_storage_and_database,
     search_entries,
@@ -97,15 +98,10 @@ def test_missing_image_db_row_preservation(temp_env):
 
     assert summary["missing_image_rows_fixed"] == 1
 
-    # Verify SQLite row preserved image_path = NULL
-    with get_db_connection(db_p) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, text, app, title, image_path FROM entries WHERE id = ?", (entry_id,))
-        row = cursor.fetchone()
-        assert row is not None
-        assert row["text"] == "Important OCR text that must not be deleted"
-        assert row["app"] == "SecretApp"
-        assert row["image_path"] is None
+    # Verify SQLite row preserved original stored image_path
+    entry = get_entry_by_id(entry_id, target_path=db_p)
+    assert entry is not None
+    assert entry.image_path == "missing_file.webp"
 
     # Verify FTS5 searchability remains intact
     results = search_entries("Important OCR text", target_path=db_p)

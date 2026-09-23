@@ -170,8 +170,8 @@ class TestDatabasePhase1C(unittest.TestCase):
             # Execute create_db/migration on legacy database
             create_db(legacy_db)
 
-            # Check version updated to 2
-            self.assertEqual(get_schema_version(legacy_db), 2)
+            # Check version updated to target SCHEMA_VERSION (v3)
+            self.assertEqual(get_schema_version(legacy_db), SCHEMA_VERSION)
 
             # Check data preserved
             entries = get_recent_entries(target_path=legacy_db)
