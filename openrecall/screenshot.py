@@ -26,7 +26,12 @@ from openrecall.config import (
 from openrecall.database import insert_entry
 from openrecall.nlp import get_embedding
 from openrecall.ocr import extract_text_from_image
-from openrecall.platform import MSSScreenCaptureProvider, get_platform_provider
+from openrecall.platform import (
+    MSSScreenCaptureProvider,
+    get_platform_provider,
+    get_screen_capture_provider,
+    is_frame_valid,
+)
 from openrecall.privacy import (
     PrivacyPolicy,
     get_privacy_policy,
@@ -80,10 +85,11 @@ def is_similar(
 
 
 def take_screenshots() -> List[np.ndarray]:
-    """Captures screenshots of connected monitors via MSSScreenCaptureProvider."""
+    """Captures screenshots of connected monitors via platform-appropriate ScreenCaptureProvider."""
     primary_only = getattr(args, "primary_monitor_only", False) if args else False
-    capture_provider = MSSScreenCaptureProvider()
-    return capture_provider.take_screenshots(primary_only=primary_only)
+    capture_provider = get_screen_capture_provider()
+    screenshots = capture_provider.take_screenshots(primary_only=primary_only)
+    return [shot for shot in screenshots if is_frame_valid(shot)]
 
 
 def encode_screenshot_bytes(

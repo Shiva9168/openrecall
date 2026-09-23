@@ -113,6 +113,23 @@ class StartupIntegrationProvider(abc.ABC):
         pass
 
 
+def is_frame_valid(img: Optional[np.ndarray]) -> bool:
+    """Validates that a captured screen array contains actual non-black, non-empty desktop pixels."""
+    if img is None or not isinstance(img, np.ndarray):
+        return False
+    if img.ndim < 3 or img.shape[2] < 3 or img.size == 0:
+        return False
+    if img.shape[0] < 100 or img.shape[1] < 100:
+        return False
+    # Check if array is completely pitch-black (max pixel value <= 1)
+    if int(np.max(img)) <= 1:
+        return False
+    # Check for non-zero pixel variance (filters out flat single-color screens)
+    if float(np.std(img)) < 0.1:
+        return False
+    return True
+
+
 class MSSScreenCaptureProvider(ScreenCaptureProvider):
     """Default cross-platform screen capture provider powered by mss."""
 
@@ -130,6 +147,209 @@ class MSSScreenCaptureProvider(ScreenCaptureProvider):
         except Exception:
             return []
         return screenshots
+
+
+class WaylandScreenCastCaptureProvider(ScreenCaptureProvider):
+    """Linux Wayland screen capture provider powered by XDG Desktop Portal ScreenCast and PipeWire.
+
+    Provides continuous, silent desktop frame sampling via PyGObject GStreamer (pipewiresrc -> appsink)
+    without triggering OS camera shutter sounds or saving intermediate files to disk.
+    """
+
+    def __init__(self, appdata_dir: Optional[str] = None):
+        self.appdata_dir = appdata_dir
+        self._process = None
+        self._is_degraded = False
+
+    def take_screenshots(self, primary_only: bool = False) -> List[np.ndarray]:
+        if self._is_degraded:
+            return []
+
+        frame = self._acquire_frame()
+        if frame is not None and is_frame_valid(frame):
+            return [frame]
+        return []
+
+    def _acquire_frame(self) -> Optional[np.ndarray]:
+        import json
+        import struct
+
+        python_candidates = ["/usr/bin/python3", "/usr/bin/python", sys.executable]
+
+        if not self.appdata_dir:
+            try:
+                from openrecall.config import appdata_folder
+                self.appdata_dir = appdata_folder
+            except Exception:
+                self.appdata_dir = os.path.expanduser("~/.local/share/openrecall")
+
+        session_file = os.path.join(self.appdata_dir, "portal_session.json")
+
+        helper_code = (
+            "import dbus, dbus.mainloop.glib, os, sys, time, struct, json\n"
+            "import gi\n"
+            "try:\n"
+            "    gi.require_version('Gst', '1.0')\n"
+            "    from gi.repository import Gst, GLib\n"
+            "except Exception:\n"
+            "    sys.exit(2)\n"
+            "\n"
+            "Gst.init(None)\n"
+            "dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)\n"
+            "try:\n"
+            "    bus = dbus.SessionBus()\n"
+            "except Exception:\n"
+            "    sys.exit(3)\n"
+            "\n"
+            "session_file = sys.argv[1] if len(sys.argv) > 1 else ''\n"
+            "restore_token = None\n"
+            "if session_file and os.path.exists(session_file):\n"
+            "    try:\n"
+            "        with open(session_file, 'r') as f:\n"
+            "            restore_token = json.load(f).get('restore_token')\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "\n"
+            "try:\n"
+            "    portal = bus.get_object('org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop')\n"
+            "    screencast = dbus.Interface(portal, 'org.freedesktop.portal.ScreenCast')\n"
+            "except Exception:\n"
+            "    sys.exit(3)\n"
+            "\n"
+            "loop = GLib.MainLoop()\n"
+            "state = {'session_path': None, 'fd': None, 'serial': None}\n"
+            "\n"
+            "def save_restore_token(token):\n"
+            "    if session_file and token:\n"
+            "        try:\n"
+            "            os.makedirs(os.path.dirname(session_file), exist_ok=True)\n"
+            "            with open(session_file, 'w') as f:\n"
+            "                json.dump({'restore_token': str(token)}, f)\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "\n"
+            "def on_start(response, results):\n"
+            "    if response == 0:\n"
+            "        streams = results.get('streams', [])\n"
+            "        new_token = results.get('restore_token')\n"
+            "        if new_token:\n"
+            "            save_restore_token(new_token)\n"
+            "        if streams:\n"
+            "            state['serial'] = streams[0][1].get('pipewire-serial', streams[0][0])\n"
+            "            try:\n"
+            "                fd_obj = screencast.OpenPipeWireRemote(state['session_path'], {})\n"
+            "                state['fd'] = fd_obj.take()\n"
+            "            except Exception:\n"
+            "                pass\n"
+            "    loop.quit()\n"
+            "\n"
+            "def on_select_sources(response, results):\n"
+            "    if response == 0:\n"
+            "        opts = {'handle_token': f'req_start_{int(time.time())}'}\n"
+            "        req = screencast.Start(state['session_path'], '', opts)\n"
+            "        bus.add_signal_receiver(on_start, signal_name='Response', dbus_interface='org.freedesktop.portal.Request', path=req)\n"
+            "    else:\n"
+            "        loop.quit()\n"
+            "\n"
+            "def on_create_session(response, results):\n"
+            "    if response == 0 and 'session_handle' in results:\n"
+            "        state['session_path'] = str(results['session_handle'])\n"
+            "        opts = {'types': dbus.UInt32(1), 'multiple': dbus.Boolean(False), 'persist_mode': dbus.UInt32(2), 'handle_token': f'req_select_{int(time.time())}'}\n"
+            "        if restore_token:\n"
+            "            opts['restore_token'] = dbus.String(restore_token)\n"
+            "        req = screencast.SelectSources(state['session_path'], opts)\n"
+            "        bus.add_signal_receiver(on_select_sources, signal_name='Response', dbus_interface='org.freedesktop.portal.Request', path=req)\n"
+            "    else:\n"
+            "        loop.quit()\n"
+            "\n"
+            "try:\n"
+            "    req = screencast.CreateSession({'session_handle_token': f'sess_{int(time.time())}', 'handle_token': f'req_create_{int(time.time())}'})\n"
+            "    bus.add_signal_receiver(on_create_session, signal_name='Response', dbus_interface='org.freedesktop.portal.Request', path=req)\n"
+            "    GLib.timeout_add_seconds(12, loop.quit)\n"
+            "    loop.run()\n"
+            "except Exception:\n"
+            "    sys.exit(4)\n"
+            "\n"
+            "if state['fd'] is None or state['serial'] is None:\n"
+            "    if restore_token and session_file and os.path.exists(session_file):\n"
+            "        try:\n"
+            "            os.remove(session_file)\n"
+            "        except Exception:\n"
+            "            pass\n"
+            "    sys.exit(5)\n"
+            "\n"
+            "pipeline_str = f'pipewiresrc name=src ! videorate ! video/x-raw,framerate=1/10 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink max-buffers=1 drop=true'\n"
+            "try:\n"
+            "    pipeline = Gst.parse_launch(pipeline_str)\n"
+            "    src = pipeline.get_by_name('src')\n"
+            "    src.set_property('fd', state['fd'])\n"
+            "    src.set_property('target-object', str(state['serial']))\n"
+            "    sink = pipeline.get_by_name('sink')\n"
+            "    pipeline.set_state(Gst.State.PLAYING)\n"
+            "    time.sleep(0.5)\n"
+            "    sample = sink.emit('pull-sample')\n"
+            "    if sample:\n"
+            "        caps = sample.get_caps()\n"
+            "        s = caps.get_structure(0)\n"
+            "        w = s.get_int('width')[1]\n"
+            "        h = s.get_int('height')[1]\n"
+            "        buf = sample.get_buffer()\n"
+            "        ok, map_info = buf.map(Gst.MapFlags.READ)\n"
+            "        if ok:\n"
+            "            raw_data = bytes(map_info.data)\n"
+            "            buf.unmap(map_info)\n"
+            "            sys.stdout.buffer.write(struct.pack('<II', w, h) + raw_data)\n"
+            "            sys.stdout.buffer.flush()\n"
+            "            pipeline.set_state(Gst.State.NULL)\n"
+            "            sys.exit(0)\n"
+            "    pipeline.set_state(Gst.State.NULL)\n"
+            "except Exception:\n"
+            "    pass\n"
+            "sys.exit(6)\n"
+        )
+
+        for python_bin in python_candidates:
+            if not os.path.exists(python_bin):
+                continue
+            try:
+                proc = subprocess.run(
+                    [python_bin, "-c", helper_code, session_file],
+                    capture_output=True,
+                    timeout=15,
+                )
+                if proc.returncode == 0 and len(proc.stdout) > 8:
+                    header = proc.stdout[:8]
+                    w, h = struct.unpack("<II", header)
+                    expected_len = w * h * 3
+                    raw_data = proc.stdout[8 : 8 + expected_len]
+                    if len(raw_data) == expected_len:
+                        arr = np.frombuffer(raw_data, dtype=np.uint8).reshape((h, w, 3))
+                        return arr
+                elif proc.returncode in (2, 3):
+                    self._is_degraded = True
+                    return None
+            except Exception:
+                pass
+
+        return None
+
+
+_screen_capture_provider_instance = None
+
+
+def get_screen_capture_provider() -> ScreenCaptureProvider:
+    """Returns the active screen capture provider instance for the current OS."""
+    global _screen_capture_provider_instance
+    if _screen_capture_provider_instance is None:
+        if sys.platform.startswith("linux"):
+            is_wayland = bool(os.environ.get("WAYLAND_DISPLAY")) or os.environ.get("XDG_SESSION_TYPE") == "wayland"
+            if is_wayland:
+                _screen_capture_provider_instance = WaylandScreenCastCaptureProvider()
+            else:
+                _screen_capture_provider_instance = MSSScreenCaptureProvider()
+        else:
+            _screen_capture_provider_instance = MSSScreenCaptureProvider()
+    return _screen_capture_provider_instance
 
 
 def _get_autostart_command() -> str:

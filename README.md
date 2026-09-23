@@ -41,7 +41,7 @@ OpenRecall offers several key advantages over closed-source alternatives:
 OpenRecall is built using modular platform abstraction providers:
 
 - **Linux (X11)**: Fully supported. Automatic screen capture, multi-monitor enumeration, active application name, window title tracking via `xprop`, and autostart via XDG (`~/.config/autostart`).
-- **Linux (Wayland)**: Supported with known limitations. Screen capture operates via XWayland where supported. Security restrictions under pure Wayland mean active application name and window title degrade gracefully to `Unknown App` / `Untitled Window`.
+- **Linux (Wayland)**: Supported natively via XDG Desktop Portal ScreenCast and PipeWire continuous streaming (`WaylandScreenCastCaptureProvider`). First-time use requires granting screen sharing permission in the OS dialog; session restoration tokens persist locally across system reboots. Active application name and window title tracking degrade gracefully under Wayland security boundaries.
 - **Windows (10 / 11)**: Supported. Multi-monitor GDI screen capture, active window title and process tracking via `pywin32`, and autostart via Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
 - **macOS**: Supported. Multi-monitor Quartz screen capture, active application and window title tracking via `pyobjc`, and autostart via LaunchAgent (`~/Library/LaunchAgents/com.openrecall.app.plist`). *Note*: macOS 10.15+ requires granting Screen Recording permission in System Settings.
 

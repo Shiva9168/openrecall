@@ -18,22 +18,31 @@ class TestAppRoutesPhase6A(unittest.TestCase):
         self.db_path = os.path.join(self.temp_dir.name, "test_recall.db")
         create_db(self.db_path)
 
+        self.db_patcher1 = patch("openrecall.database.db_path", self.db_path)
+        self.db_patcher2 = patch("openrecall.config.db_path", self.db_path)
+        self.db_patcher3 = patch("openrecall.config.get_appdata_folder", return_value=self.temp_dir.name)
+        self.db_patcher1.start()
+        self.db_patcher2.start()
+        self.db_patcher3.start()
+
         app.config["TESTING"] = True
         self.client = app.test_client()
 
         # Seed sample data
         self.now = int(time.time())
-        with patch("openrecall.database.db_path", self.db_path):
-            insert_entry(
-                text="Flask timeline backend test entry text. Tesseract OCR active.",
-                timestamp=self.now,
-                app="Firefox",
-                title="OpenRecall GitHub Repository",
-                image_path=f"{self.now}_0.webp",
-                target_path=self.db_path,
-            )
+        insert_entry(
+            text="Flask timeline backend test entry text. Tesseract OCR active.",
+            timestamp=self.now,
+            app="Firefox",
+            title="OpenRecall GitHub Repository",
+            image_path=f"{self.now}_0.webp",
+            target_path=self.db_path,
+        )
 
     def tearDown(self):
+        self.db_patcher1.stop()
+        self.db_patcher2.stop()
+        self.db_patcher3.stop()
         self.temp_dir.cleanup()
 
     def test_timeline_route_html(self):
