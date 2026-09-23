@@ -207,10 +207,80 @@ class TestPlatformAbstractions(unittest.TestCase):
         shots = provider.take_screenshots()
         self.assertEqual(shots, [])  # Returns empty list without calling MSS
 
+    def test_wayland_screencast_persistent_process_single_popen(self):
+        valid_frame = np.random.randint(10, 250, (100, 100, 3), dtype=np.uint8)
+        provider = WaylandScreenCastCaptureProvider()
+
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch("os.path.exists", return_value=True), \
+             patch("threading.Thread"):
+            provider._latest_frame = valid_frame
+
+            # Multiple capture calls
+            shots1 = provider.take_screenshots()
+            shots2 = provider.take_screenshots()
+            shots3 = provider.take_screenshots()
+
+            self.assertEqual(len(shots1), 1)
+            self.assertEqual(len(shots2), 1)
+            self.assertEqual(len(shots3), 1)
+            # Popen must be called ONCE, not per capture interval
+            mock_popen.assert_called_once()
+
+    def test_wayland_screencast_degraded_on_dependency_exit(self):
+        provider = WaylandScreenCastCaptureProvider()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 2  # Missing GStreamer/PyGObject code 2
+
+        provider._proc = mock_proc
+        shots = provider.take_screenshots()
+        self.assertEqual(shots, [])
+        self.assertTrue(provider._is_degraded)
+
+    def test_wayland_screencast_stop_cleanup(self):
+        provider = WaylandScreenCastCaptureProvider()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = None
+        provider._proc = mock_proc
+
+        provider.stop()
+        mock_proc.terminate.assert_called_once()
+        self.assertIsNone(provider._proc)
+
+    def test_wayland_screencast_reader_loop_malformed_header(self):
+        import io
+        import struct
+
+        provider = WaylandScreenCastCaptureProvider()
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, None, 0]
+
+        # Send invalid magic header
+        mock_proc.stdout = io.BytesIO(b"BADM" + struct.pack("<III", 100, 100, 30000))
+        provider._reader_loop(mock_proc)
+        self.assertIsNone(provider._latest_frame)
+
+    def test_wayland_screencast_reader_loop_oversized_bounds(self):
+        import io
+        import struct
+
+        provider = WaylandScreenCastCaptureProvider()
+        mock_proc = MagicMock()
+        mock_proc.poll.side_effect = [None, None, 0]
+
+        # Send frame size exceeding 100MB bound (e.g., 20000x20000)
+        mock_proc.stdout = io.BytesIO(b"FRAM" + struct.pack("<III", 20000, 20000, 120_000_000))
+        provider._reader_loop(mock_proc)
+        self.assertIsNone(provider._latest_frame)
+
     def test_wayland_screencast_capture_provider_valid_frame(self):
         valid_frame = np.random.randint(0, 255, (200, 200, 3), dtype=np.uint8)
         provider = WaylandScreenCastCaptureProvider()
-        with patch.object(provider, "_acquire_frame", return_value=valid_frame):
+        with patch.object(provider, "_ensure_started", return_value=True):
+            provider._latest_frame = valid_frame
             shots = provider.take_screenshots()
             self.assertEqual(len(shots), 1)
             self.assertEqual(shots[0].shape, (200, 200, 3))
