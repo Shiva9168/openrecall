@@ -686,9 +686,32 @@ def _safe_remove_image_file(
     if not image_path:
         return True
 
-    base_dir = storage_dir or screenshots_path
-    full_path = image_path if os.path.isabs(image_path) else os.path.join(base_dir, image_path)
-    norm_path = os.path.normpath(full_path)
+    safe_filename = os.path.basename(image_path)
+    if not safe_filename or safe_filename.startswith(".") or safe_filename != image_path:
+        # Reject path traversal payloads (e.g., ../../etc/passwd)
+        return False
+
+    import openrecall.config as config
+    base_dir = storage_dir or config.screenshots_path
+    allowed_dirs = [os.path.abspath(base_dir)]
+    try:
+        default_screenshots = os.path.abspath(os.path.join(config.get_appdata_folder(), "screenshots"))
+        if default_screenshots not in allowed_dirs:
+            allowed_dirs.append(default_screenshots)
+    except Exception:
+        pass
+
+    full_path = os.path.join(allowed_dirs[0], safe_filename)
+    norm_path = os.path.abspath(os.path.normpath(full_path))
+
+    # Security check: verify path is contained within an allowed storage root
+    is_contained = any(
+        os.path.commonpath([norm_path, allowed_dir]) == allowed_dir
+        for allowed_dir in allowed_dirs
+    )
+    if not is_contained:
+        print(f"Security Warning: Rejected removal of path outside storage root: {norm_path}")
+        return False
 
     if not os.path.exists(norm_path):
         return True
