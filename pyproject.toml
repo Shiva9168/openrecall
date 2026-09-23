@@ -37,3 +37,6 @@ macos = [
 
 [project.scripts]
 openrecall = "openrecall.app:main"
+
+[project.gui-scripts]
+openrecall-bg = "openrecall.app:main"

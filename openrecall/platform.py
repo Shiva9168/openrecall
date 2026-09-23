@@ -313,11 +313,20 @@ def get_screen_capture_provider() -> ScreenCaptureProvider:
 def _get_autostart_command() -> str:
     """Helper function to resolve executable command for OS autostart registration."""
     import shutil
+    if sys.platform == "win32":
+        bg_bin = shutil.which("openrecall-bg")
+        if bg_bin:
+            return f'"{os.path.normpath(bg_bin)}" --background'
+        python_dir = os.path.dirname(sys.executable) if sys.executable else ""
+        pythonw = os.path.join(python_dir, "pythonw.exe") if python_dir else ""
+        if os.path.exists(pythonw):
+            return f'"{os.path.normpath(pythonw)}" -m openrecall.app --background'
+
     openrecall_bin = shutil.which("openrecall")
     if openrecall_bin:
-        return f'"{os.path.normpath(openrecall_bin)}"'
+        return f'"{os.path.normpath(openrecall_bin)}" --background'
     python_bin = sys.executable or "python"
-    return f'"{os.path.normpath(python_bin)}" -m openrecall.app'
+    return f'"{os.path.normpath(python_bin)}" -m openrecall.app --background'
 
 
 class LinuxPlatformProvider(
@@ -604,10 +613,10 @@ class MacOSPlatformProvider(
 
             openrecall_bin = shutil.which("openrecall")
             if openrecall_bin:
-                program_args = [os.path.normpath(openrecall_bin)]
+                program_args = [os.path.normpath(openrecall_bin), "--background"]
             else:
                 python_bin = sys.executable or "python"
-                program_args = [os.path.normpath(python_bin), "-m", "openrecall.app"]
+                program_args = [os.path.normpath(python_bin), "-m", "openrecall.app", "--background"]
 
             plist_content = (
                 '<?xml version="1.0" encoding="UTF-8"?>\n'

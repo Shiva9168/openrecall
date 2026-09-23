@@ -1,6 +1,9 @@
-"""General utility functions and legacy platform delegate wrappers."""
+"""General utility functions, single-instance process lock, and platform delegate wrappers."""
 
 import datetime
+import os
+import sys
+import urllib.request
 from typing import Optional
 
 from openrecall.platform import (
@@ -50,3 +53,76 @@ def is_user_active() -> bool:
     """Checks if the user is active on the current platform."""
     provider = get_platform_provider()
     return provider.is_user_active()
+
+
+class SingleInstanceLock:
+    """Cross-platform single-instance process lock using OS kernel file locking."""
+
+    def __init__(self, lock_file_path: str):
+        self.lock_file_path = os.path.abspath(lock_file_path)
+        self.file_handle = None
+        self._is_locked = False
+
+    def acquire(self) -> bool:
+        """Attempts to acquire exclusive lock. Returns True if acquired, False if another instance holds it."""
+        try:
+            os.makedirs(os.path.dirname(self.lock_file_path), exist_ok=True)
+            self.file_handle = open(self.lock_file_path, "a+")
+
+            if sys.platform == "win32":
+                import msvcrt
+                try:
+                    self.file_handle.seek(0)
+                    msvcrt.locking(self.file_handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    self._is_locked = True
+                    return True
+                except (IOError, OSError):
+                    return False
+            else:
+                import fcntl
+                try:
+                    fcntl.flock(self.file_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self._is_locked = True
+                    return True
+                except (IOError, OSError):
+                    return False
+        except Exception:
+            return False
+
+    def release(self):
+        """Releases the lock and closes the lock file."""
+        if not self._is_locked or not self.file_handle:
+            return
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                try:
+                    self.file_handle.seek(0)
+                    msvcrt.locking(self.file_handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except Exception:
+                    pass
+            else:
+                import fcntl
+                try:
+                    fcntl.flock(self.file_handle.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+            self.file_handle.close()
+        except Exception:
+            pass
+        finally:
+            self.file_handle = None
+            self._is_locked = False
+
+
+def check_existing_instance_running(port: int = 8082, timeout: float = 1.0) -> bool:
+    """Checks if an existing OpenRecall instance is responding to /api/health."""
+    try:
+        url = f"http://127.0.0.1:{port}/api/health"
+        req = urllib.request.Request(url, headers={"User-Agent": "OpenRecall-InstanceCheck"})
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            if response.status == 200:
+                return True
+    except Exception:
+        pass
+    return False

@@ -33,7 +33,12 @@ from openrecall.ocr import TesseractOCRProvider
 from openrecall.platform import get_platform_provider
 from openrecall.privacy import get_privacy_policy
 from openrecall.screenshot import get_capture_pipeline, record_screenshots_thread
-from openrecall.utils import human_readable_time, timestamp_to_human_readable
+from openrecall.utils import (
+    SingleInstanceLock,
+    check_existing_instance_running,
+    human_readable_time,
+    timestamp_to_human_readable,
+)
 
 app = Flask(__name__)
 
@@ -181,10 +186,8 @@ base_template = """
             <span class="w-2 h-2 rounded-full bg-slate-300"></span>
             <span class="font-medium text-slate-500">Autostart: Inactive</span>
           {% endif %}
-          <button type="button" onclick="toggleAutostartInfo()" class="text-slate-400 hover:text-indigo-600 transition-colors ml-0.5 cursor-pointer" aria-label="Autostart info">
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-            </svg>
+          <button type="button" onclick="toggleAutostartInfo()" class="px-1.5 py-0.5 text-[11px] font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 hover:bg-indigo-100 rounded transition-colors cursor-pointer" aria-label="Autostart help information">
+            Help
           </button>
         </div>
       </div>
@@ -199,13 +202,25 @@ base_template = """
       </div>
     </div>
     <div id="autostartInfoModal" class="hidden max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-2 pt-2 border-t border-slate-100 text-xs text-slate-600">
-      <div class="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-start justify-between gap-3">
-        <div>
-          <p class="font-semibold text-slate-800 mb-1">System Login Autostart</p>
-          <p class="text-slate-600 mb-1">OpenRecall can start automatically when you log into your system account. This configuration is stored locally on your device.</p>
-          <p class="text-slate-500 font-mono text-[11px]">To enable or disable via CLI: <code class="bg-slate-200 text-slate-800 px-1.5 py-0.5 rounded">openrecall --enable-autostart</code> or <code class="bg-slate-200 text-slate-800 px-1.5 py-0.5 rounded">openrecall --disable-autostart</code></p>
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-3.5 flex items-start justify-between gap-3 shadow-xs">
+        <div class="space-y-1.5">
+          <div class="flex items-center gap-2">
+            <h4 class="font-bold text-slate-900 text-xs">System Login Autostart</h4>
+            {% if autostart_enabled %}
+              <span class="px-2 py-0.2 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-800">Currently Enabled</span>
+            {% else %}
+              <span class="px-2 py-0.2 rounded text-[10px] font-semibold bg-slate-200 text-slate-700">Currently Disabled</span>
+            {% endif %}
+          </div>
+          <p class="text-slate-600 leading-relaxed">
+            Autostart configures OpenRecall to launch automatically in the background when logging into your user account on this computer.
+          </p>
+          <div class="pt-1 font-mono text-[11px] text-slate-600 space-y-1">
+            <p><span class="font-semibold text-slate-700 font-sans">Enable Autostart:</span> <code class="bg-white border border-slate-200 text-indigo-700 px-1.5 py-0.5 rounded">openrecall --enable-autostart</code></p>
+            <p><span class="font-semibold text-slate-700 font-sans">Disable Autostart:</span> <code class="bg-white border border-slate-200 text-slate-700 px-1.5 py-0.5 rounded">openrecall --disable-autostart</code></p>
+          </div>
         </div>
-        <button type="button" onclick="toggleAutostartInfo()" class="text-slate-400 hover:text-slate-600 font-bold text-sm leading-none cursor-pointer">&times;</button>
+        <button type="button" onclick="toggleAutostartInfo()" class="text-slate-400 hover:text-slate-600 font-bold text-sm leading-none cursor-pointer px-1">&times;</button>
       </div>
     </div>
   </footer>
@@ -1236,6 +1251,26 @@ def main():
     from openrecall.platform import get_platform_provider
 
     create_db()
+
+    # 1. Single-instance lock and duplicate startup check
+    lock_file = os.path.join(appdata_folder, "openrecall.lock")
+    instance_lock = SingleInstanceLock(lock_file)
+
+    if not instance_lock.acquire() or check_existing_instance_running(port=8082):
+        if getattr(args, "enable_autostart", False):
+            if get_platform_provider().enable_startup():
+                print("Successfully enabled system autostart.")
+            else:
+                print("Failed to enable system autostart.")
+        elif getattr(args, "disable_autostart", False):
+            if get_platform_provider().disable_startup():
+                print("Successfully disabled system autostart.")
+            else:
+                print("Failed to disable system autostart.")
+        else:
+            print("OpenRecall is already running in the background (http://127.0.0.1:8082).")
+        sys.exit(0)
+
     print(f"Appdata folder: {appdata_folder}")
 
     if getattr(args, "enable_autostart", False):
@@ -1250,23 +1285,24 @@ def main():
         else:
             print("Failed to disable system autostart.")
 
-    # 1. Run startup storage maintenance & orphan reconciliation
+    # 2. Run startup storage maintenance & orphan reconciliation
     print("Running startup storage reconciliation...")
     reconcile_storage_and_database()
 
-    # 2. Start CapturePipeline
+    # 3. Start CapturePipeline
     pipeline = get_capture_pipeline()
     pipeline.start()
 
-    # 3. Start MaintenanceWorker
+    # 4. Start MaintenanceWorker
     maintenance_worker = MaintenanceWorker(storage_lock=pipeline.storage_lock)
     maintenance_worker.start()
 
-    # 4. Graceful OS signal handling (SIGINT, SIGTERM)
+    # 5. Graceful OS signal handling (SIGINT, SIGTERM)
     def signal_handler(sig, frame):
         print("\nShutdown signal received. Stopping background threads gracefully...")
         pipeline.stop(timeout=2.0)
         maintenance_worker.stop(timeout=2.0)
+        instance_lock.release()
         sys.exit(0)
 
     try:
@@ -1275,7 +1311,10 @@ def main():
     except (ValueError, AttributeError):
         pass
 
-    app.run(port=8082)
+    try:
+        app.run(port=8082)
+    finally:
+        instance_lock.release()
 
 
 if __name__ == "__main__":

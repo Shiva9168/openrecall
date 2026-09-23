@@ -77,6 +77,13 @@ parser.add_argument(
     help="Disable automatic startup on system boot",
 )
 
+parser.add_argument(
+    "--background",
+    action="store_true",
+    default=False,
+    help="Run OpenRecall silently in the background without a visible console window",
+)
+
 # Parse args safely with fallback when imported in test runners
 try:
     args, _ = parser.parse_known_args()
