@@ -11,8 +11,11 @@ from openrecall.platform import (
     LinuxPlatformProvider,
     MacOSPlatformProvider,
     MSSScreenCaptureProvider,
+    WaylandScreenCastCaptureProvider,
     WindowsPlatformProvider,
     get_platform_provider,
+    get_screen_capture_provider,
+    is_frame_valid,
 )
 
 
@@ -165,6 +168,52 @@ class TestPlatformAbstractions(unittest.TestCase):
              patch("os.remove") as mock_remove:
             self.assertTrue(linux_provider.disable_startup())
             mock_remove.assert_called_once()
+
+    def test_is_frame_valid(self):
+        self.assertFalse(is_frame_valid(None))
+        self.assertFalse(is_frame_valid("invalid"))
+        # Invalid dimensions
+        self.assertFalse(is_frame_valid(np.zeros((10, 10), dtype=np.uint8)))
+        self.assertFalse(is_frame_valid(np.zeros((10, 10, 3), dtype=np.uint8)))
+        # Pitch black screen (max <= 1)
+        black_screen = np.zeros((200, 200, 3), dtype=np.uint8)
+        self.assertFalse(is_frame_valid(black_screen))
+        # Flat single color screen (std < 0.1)
+        flat_screen = np.full((200, 200, 3), 128, dtype=np.uint8)
+        self.assertFalse(is_frame_valid(flat_screen))
+        # Valid desktop frame
+        valid_frame = np.random.randint(0, 255, (200, 200, 3), dtype=np.uint8)
+        self.assertTrue(is_frame_valid(valid_frame))
+
+    def test_get_screen_capture_provider(self):
+        import openrecall.platform
+        openrecall.platform._screen_capture_provider_instance = None
+        with patch("sys.platform", "linux"), patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+            openrecall.platform._screen_capture_provider_instance = None
+            provider = get_screen_capture_provider()
+            self.assertIsInstance(provider, WaylandScreenCastCaptureProvider)
+
+        openrecall.platform._screen_capture_provider_instance = None
+        with patch("sys.platform", "linux"), patch.dict(os.environ, {"WAYLAND_DISPLAY": "", "XDG_SESSION_TYPE": "x11"}):
+            openrecall.platform._screen_capture_provider_instance = None
+            provider = get_screen_capture_provider()
+            self.assertIsInstance(provider, MSSScreenCaptureProvider)
+
+        openrecall.platform._screen_capture_provider_instance = None
+
+    def test_wayland_screencast_capture_provider_degraded_state(self):
+        provider = WaylandScreenCastCaptureProvider()
+        provider._is_degraded = True
+        shots = provider.take_screenshots()
+        self.assertEqual(shots, [])  # Returns empty list without calling MSS
+
+    def test_wayland_screencast_capture_provider_valid_frame(self):
+        valid_frame = np.random.randint(0, 255, (200, 200, 3), dtype=np.uint8)
+        provider = WaylandScreenCastCaptureProvider()
+        with patch.object(provider, "_acquire_frame", return_value=valid_frame):
+            shots = provider.take_screenshots()
+            self.assertEqual(len(shots), 1)
+            self.assertEqual(shots[0].shape, (200, 200, 3))
 
 
 if __name__ == "__main__":
