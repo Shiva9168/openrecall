@@ -1298,6 +1298,13 @@ def main():
     from openrecall.config import args
     from openrecall.platform import get_platform_provider
 
+    if sys.platform == "win32" and getattr(args, "background", False):
+        try:
+            import ctypes
+            ctypes.windll.kernel32.FreeConsole()
+        except Exception:
+            pass
+
     create_db()
 
     # 1. Single-instance lock and duplicate startup check

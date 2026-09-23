@@ -314,18 +314,32 @@ def _get_autostart_command() -> str:
     """Helper function to resolve executable command for OS autostart registration."""
     import shutil
     if sys.platform == "win32":
-        bg_bin = shutil.which("openrecall-bg")
+        bg_bin = shutil.which("openrecall-bg") or shutil.which("openrecall-bg.exe")
+        if not bg_bin and sys.executable:
+            python_dir = os.path.dirname(sys.executable)
+            possible_bg = os.path.join(python_dir, "openrecall-bg.exe")
+            if os.path.exists(possible_bg):
+                bg_bin = possible_bg
         if bg_bin:
             return f'"{os.path.normpath(bg_bin)}" --background'
-        python_dir = os.path.dirname(sys.executable) if sys.executable else ""
-        pythonw = os.path.join(python_dir, "pythonw.exe") if python_dir else ""
-        if os.path.exists(pythonw):
-            return f'"{os.path.normpath(pythonw)}" -m openrecall.app --background'
 
-    openrecall_bin = shutil.which("openrecall")
+        if sys.executable:
+            python_dir = os.path.dirname(sys.executable)
+            pythonw = os.path.join(python_dir, "pythonw.exe")
+            if os.path.exists(pythonw):
+                return f'"{os.path.normpath(pythonw)}" -m openrecall.app --background'
+
+    openrecall_bin = shutil.which("openrecall") or shutil.which("openrecall.exe")
+    if not openrecall_bin and sys.executable:
+        python_dir = os.path.dirname(sys.executable)
+        possible_bin = os.path.join(python_dir, "openrecall.exe" if sys.platform == "win32" else "openrecall")
+        if os.path.exists(possible_bin):
+            openrecall_bin = possible_bin
+
     if openrecall_bin:
         return f'"{os.path.normpath(openrecall_bin)}" --background'
-    python_bin = sys.executable or "python"
+
+    python_bin = sys.executable or ("pythonw.exe" if sys.platform == "win32" else "python3")
     return f'"{os.path.normpath(python_bin)}" -m openrecall.app --background'
 
 
@@ -365,7 +379,9 @@ class LinuxPlatformProvider(
                     "[Desktop Entry]\n"
                     "Type=Application\n"
                     "Name=OpenRecall\n"
+                    "Comment=Privacy-first digital memory assistant\n"
                     f"Exec={cmd}\n"
+                    "Terminal=false\n"
                     "Hidden=false\n"
                     "NoDisplay=false\n"
                     "X-GNOME-Autostart-enabled=true\n"
@@ -609,14 +625,10 @@ class MacOSPlatformProvider(
             if not os.path.exists(dir_name):
                 os.makedirs(dir_name, exist_ok=True)
 
-            import shutil
+            cmd = _get_autostart_command()
+            import shlex
 
-            openrecall_bin = shutil.which("openrecall")
-            if openrecall_bin:
-                program_args = [os.path.normpath(openrecall_bin), "--background"]
-            else:
-                python_bin = sys.executable or "python"
-                program_args = [os.path.normpath(python_bin), "-m", "openrecall.app", "--background"]
+            program_args = shlex.split(cmd)
 
             plist_content = (
                 '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -636,6 +648,10 @@ class MacOSPlatformProvider(
                 '    <true/>\n'
                 '    <key>KeepAlive</key>\n'
                 '    <false/>\n'
+                '    <key>StandardOutPath</key>\n'
+                '    <string>/dev/null</string>\n'
+                '    <key>StandardErrorPath</key>\n'
+                '    <string>/dev/null</string>\n'
                 '</dict>\n'
                 '</plist>\n'
             )

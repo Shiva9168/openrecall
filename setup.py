@@ -42,5 +42,8 @@ setup(
         "console_scripts": [
             "openrecall=openrecall.app:main",
         ],
+        "gui_scripts": [
+            "openrecall-bg=openrecall.app:main",
+        ],
     },
 )
