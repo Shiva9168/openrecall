@@ -72,11 +72,14 @@ def inject_global_template_context():
     policy = get_privacy_policy()
     ocr_provider = TesseractOCRProvider()
     platform_provider = get_platform_provider()
+    css_path = os.path.join(os.path.dirname(__file__), "static", "css", "output.css")
+    css_v = int(os.path.getmtime(css_path)) if os.path.exists(css_path) else 1
     return {
         "is_paused": policy.is_paused(),
         "ocr_available": ocr_provider.is_available(),
         "autostart_enabled": platform_provider.is_startup_enabled(),
         "appdata_folder": appdata_folder,
+        "css_version": css_v,
     }
 
 
@@ -87,7 +90,7 @@ base_template = """
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OpenRecall - Digital Memory</title>
-  <link rel="stylesheet" href="/static/css/output.css">
+  <link rel="stylesheet" href="/static/css/output.css?v={{ css_version }}">
   <style>
     /* Baseline layout fallbacks and keyboard focus enhancements */
     *, *::before, *::after { box-sizing: border-box; }
@@ -143,18 +146,18 @@ base_template = """
   </header>
 
   <!-- Dedicated Capture Control & Status Sub-bar -->
-  <div class="bg-slate-100/90 border-b border-slate-200 py-2.5 shadow-2xs">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4">
-      <div class="flex items-center gap-3">
-        <span class="text-xs font-medium text-slate-500">Capture Status:</span>
+  <div class="bg-slate-100/70 border-b border-slate-200/80 py-2">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-4 text-xs">
+      <div class="flex items-center gap-2 font-medium">
+        <span class="text-slate-500">Capture Status:</span>
         {% if is_paused %}
-          <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-900 border border-amber-200" title="Capturing is paused">
-            <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+          <span class="inline-flex items-center gap-1.5 font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-200/80" title="Capturing is paused">
+            <span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
             <span>Capture Paused</span>
           </span>
         {% else %}
-          <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-900 border border-emerald-200" title="Capturing is active">
-            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+          <span class="inline-flex items-center gap-1.5 font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200/80" title="Capturing is active">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
             <span>Capture Active</span>
           </span>
         {% endif %}
@@ -162,13 +165,13 @@ base_template = """
       <div>
         {% if is_paused %}
           <form action="/api/resume" method="post" class="inline m-0">
-            <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition-colors shadow-2xs cursor-pointer">
+            <button type="submit" class="inline-flex items-center px-2.5 py-1 rounded text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white transition-colors cursor-pointer shadow-2xs">
               Resume Capture
             </button>
           </form>
         {% else %}
           <form action="/api/pause" method="post" class="inline m-0">
-            <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 transition-colors shadow-2xs cursor-pointer">
+            <button type="submit" class="inline-flex items-center px-2.5 py-1 rounded text-xs font-semibold bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 transition-colors cursor-pointer shadow-2xs">
               Pause Capture
             </button>
           </form>
@@ -216,51 +219,46 @@ base_template = """
   <!-- Centered Autostart Help Modal -->
   <div id="autostartInfoModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs transition-opacity" aria-modal="true" role="dialog">
     <div class="fixed inset-0" onclick="toggleAutostartInfo()"></div>
-    <div class="relative bg-white border border-slate-200 rounded-xl shadow-xl max-w-lg w-full p-6 space-y-4 text-xs text-slate-600 z-10">
+    <div class="relative bg-white border border-slate-200/90 rounded-xl shadow-xl max-w-md w-full p-5 space-y-4 text-xs text-slate-600 z-10">
       <div class="flex items-center justify-between border-b border-slate-100 pb-3">
-        <div class="flex items-center gap-2">
-          <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-          </svg>
-          <h3 class="font-bold text-slate-900 text-sm">System Login Autostart</h3>
-        </div>
-        <button type="button" onclick="toggleAutostartInfo()" class="text-slate-400 hover:text-slate-600 font-bold text-lg leading-none cursor-pointer p-1 rounded hover:bg-slate-100 transition-colors" aria-label="Close modal">&times;</button>
+        <h3 class="font-bold text-slate-900 text-sm">Autostart</h3>
+        <button type="button" onclick="toggleAutostartInfo()" class="text-slate-400 hover:text-slate-600 font-medium text-base leading-none cursor-pointer p-1 rounded hover:bg-slate-100 transition-colors" aria-label="Close modal">&times;</button>
       </div>
 
       <div class="space-y-3">
-        <div class="flex items-center justify-between bg-slate-50 p-3 rounded-lg border border-slate-200/60">
-          <span class="font-medium text-slate-700">Autostart Status:</span>
+        <p class="text-slate-600 leading-relaxed text-xs">
+          Start OpenRecall automatically when you sign in to your computer.
+        </p>
+
+        <div class="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-lg border border-slate-200/70 text-xs">
+          <span class="font-medium text-slate-700">Status</span>
           {% if autostart_enabled %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-200">
-              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span>Currently Enabled</span>
+            <span class="inline-flex items-center gap-1.5 font-semibold text-emerald-700">
+              <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span>Enabled</span>
             </span>
           {% else %}
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200">
-              <span class="w-2 h-2 rounded-full bg-slate-400"></span>
-              <span>Currently Disabled</span>
+            <span class="inline-flex items-center gap-1.5 font-medium text-slate-500">
+              <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
+              <span>Disabled</span>
             </span>
           {% endif %}
         </div>
 
-        <p class="text-slate-600 leading-relaxed">
-          Autostart configures OpenRecall to launch automatically in the background when logging into your user account on this computer.
-        </p>
-
-        <div class="bg-slate-900 text-slate-100 rounded-lg p-3.5 space-y-2.5 font-mono text-[11px]">
+        <div class="bg-slate-900 text-slate-200 rounded-lg p-3 space-y-2.5 font-mono text-[11px] border border-slate-800">
           <div>
-            <div class="font-sans text-xs text-slate-400 font-medium mb-1">To enable autostart on system login:</div>
-            <code class="text-emerald-300 bg-slate-800/80 px-2 py-1 rounded block select-all">openrecall --enable-autostart</code>
+            <div class="font-sans text-[11px] text-slate-400 font-medium mb-1">Enable</div>
+            <code class="text-indigo-300 bg-slate-800/80 px-2 py-1 rounded block select-all">openrecall --enable-autostart</code>
           </div>
           <div>
-            <div class="font-sans text-xs text-slate-400 font-medium mb-1">To disable autostart on system login:</div>
-            <code class="text-rose-300 bg-slate-800/80 px-2 py-1 rounded block select-all">openrecall --disable-autostart</code>
+            <div class="font-sans text-[11px] text-slate-400 font-medium mb-1">Disable</div>
+            <code class="text-slate-300 bg-slate-800/80 px-2 py-1 rounded block select-all">openrecall --disable-autostart</code>
           </div>
         </div>
       </div>
 
       <div class="pt-2 flex justify-end border-t border-slate-100">
-        <button type="button" onclick="toggleAutostartInfo()" class="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-md transition-colors cursor-pointer">
+        <button type="button" onclick="toggleAutostartInfo()" class="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-md transition-colors cursor-pointer">
           Close
         </button>
       </div>
