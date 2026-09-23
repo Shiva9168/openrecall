@@ -13,6 +13,7 @@ from jinja2 import BaseLoader
 from openrecall.config import appdata_folder, screenshots_path
 from openrecall.database import (
     create_db,
+    delete_entry_by_id,
     get_all_entries,
     get_available_apps,
     get_entry_nearest_timestamp,
@@ -69,12 +70,12 @@ base_template = """
   </style>
 </head>
 <body class="bg-slate-50 text-slate-800 flex flex-col min-h-screen">
-  <!-- Offline Header Navigation -->
+  <!-- Header Navigation -->
   <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between h-16 gap-4">
         
-        <!-- Brand & Privacy Indicator -->
+        <!-- Brand Title -->
         <div class="flex items-center gap-3 shrink-0">
           <a href="/" class="flex items-center gap-2 text-slate-900 font-bold text-lg hover:text-indigo-600 transition-colors">
             <svg class="w-6 h-6 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -82,9 +83,6 @@ base_template = """
             </svg>
             <span>OpenRecall</span>
           </a>
-          <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200">
-            Local &bull; Private
-          </span>
         </div>
 
         <!-- Recording Status & Controls -->
@@ -92,7 +90,7 @@ base_template = """
           {% if is_paused %}
             <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200">
               <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
-              <span>Recording Paused</span>
+              <span>Paused</span>
             </span>
             <form action="/api/resume" method="post" class="inline m-0">
               <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors cursor-pointer">
@@ -102,7 +100,7 @@ base_template = """
           {% else %}
             <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
               <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-              <span>Recording Active</span>
+              <span>Recording</span>
             </span>
             <form action="/api/pause" method="post" class="inline m-0">
               <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors cursor-pointer">
@@ -132,16 +130,24 @@ base_template = """
     </div>
   </header>
 
-  <!-- Main Container -->
+  <!-- Main Content Container -->
   <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
     {% block content %}{% endblock %}
   </main>
 
-  <!-- Offline Footer -->
+  <!-- Footer with Open-Source Project Links -->
   <footer class="bg-white border-t border-slate-200 py-4 mt-auto">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-slate-500">
-      <div>OpenRecall &bull; Privacy-First Digital Memory Assistant</div>
-      <div>Stored locally on this system &bull; Offline &bull; No Telemetry</div>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500">
+      <div>OpenRecall &bull; Open-source digital memory assistant</div>
+      <div class="flex items-center gap-4">
+        <a href="https://github.com/Shiva9168/openrecall" target="_blank" rel="noopener noreferrer" 
+           class="hover:text-indigo-600 transition-colors inline-flex items-center gap-1.5 font-medium">
+          <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+          <span>View on GitHub</span>
+        </a>
+      </div>
     </div>
   </footer>
 </body>
@@ -220,20 +226,15 @@ def timeline():
     total_count = bounds.get("total_count", 0)
 
     if mode == "gallery":
-        app_filter = request.args.get("app")
-        title_filter = request.args.get("title")
         start_date = request.args.get("start_date")
         end_date = request.args.get("end_date")
 
         start_ts = _parse_date_to_timestamp(start_date, end_of_day=False)
         end_ts = _parse_date_to_timestamp(end_date, end_of_day=True)
 
-        available_apps = get_available_apps()
         entries = get_timeline_entries(
             start_time=start_ts,
             end_time=end_ts,
-            app=app_filter,
-            title=title_filter,
             limit=limit,
             offset=offset,
         )
@@ -245,7 +246,7 @@ def timeline():
 <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-slate-200 mb-6 gap-4">
   <div>
     <h1 class="text-xl font-bold text-slate-900">Digital Memory Gallery</h1>
-    <p class="text-xs text-slate-500 mt-0.5">Browsing screen capture history as a grid</p>
+    <p class="text-xs text-slate-500 mt-0.5">Visual grid of screen captures</p>
   </div>
   <div class="inline-flex rounded-lg p-1 bg-slate-200/70 border border-slate-200">
     <a href="/?mode=timeline" class="px-3 py-1.5 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 transition-colors">Timeline View</a>
@@ -254,32 +255,20 @@ def timeline():
 </div>
 
 {% if entries|length > 0 %}
-  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+  <!-- 5 Column Dense Desktop Grid -->
+  <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
     {% for entry in entries %}
       <div class="bg-white rounded-xl border border-slate-200 shadow-xs hover:shadow-md hover:border-slate-300 transition-all overflow-hidden flex flex-col group">
-        <a href="/capture/{{ entry.id }}" class="block bg-slate-900 aspect-video overflow-hidden relative">
+        <a href="/capture/{{ entry.id }}" class="block bg-slate-950 aspect-video overflow-hidden relative">
           <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
                loading="lazy"
-               class="w-full h-full object-cover group-hover:scale-102 transition-transform duration-200" alt="Screenshot">
+               class="w-full h-full object-cover group-hover:scale-103 transition-transform duration-200" alt="Screenshot">
         </a>
-        <div class="p-4 flex flex-col flex-1 justify-between gap-3">
-          <div>
-            <div class="flex items-center justify-between text-xs text-slate-500 mb-1">
-              <span class="font-medium text-slate-700">{{ entry.timestamp | timestamp_to_human_readable }}</span>
-              {% if entry.monitor and entry.monitor > 1 %}
-                <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold border border-slate-200">Mon {{ entry.monitor }}</span>
-              {% endif %}
-            </div>
-            {% if entry.text %}
-              <p class="text-xs text-slate-600 line-clamp-3 leading-relaxed mt-2 bg-slate-50 p-2.5 rounded-lg border border-slate-100 font-mono">{{ entry.text }}</p>
-            {% endif %}
-          </div>
-          <div class="pt-2 border-t border-slate-100 flex items-center justify-between">
-            <span class="text-[11px] text-slate-400 font-mono">#{{ entry.id }}</span>
-            <a href="/capture/{{ entry.id }}" class="text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors flex items-center gap-1">
-              Inspect &rarr;
-            </a>
-          </div>
+        <div class="p-2.5 flex items-center justify-between bg-white border-t border-slate-100 text-xs">
+          <span class="font-medium text-slate-700 text-[11px] truncate">{{ entry.timestamp | timestamp_to_human_readable }}</span>
+          <a href="/capture/{{ entry.id }}" class="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 transition-colors shrink-0">
+            Inspect &rarr;
+          </a>
         </div>
       </div>
     {% endfor %}
@@ -316,7 +305,6 @@ def timeline():
 {% endblock %}
 """,
             entries=entries,
-            available_apps=available_apps,
             page=page,
             limit=limit,
             total_count=total_count,
@@ -534,22 +522,17 @@ def timeline():
 
 @app.route("/search")
 def search():
-    """Renders the paginated search results view with filter controls."""
+    """Renders the paginated search results view with date filter controls."""
     q = request.args.get("q", "")
     page, limit, offset = _get_pagination_params()
-    app_filter = request.args.get("app")
-    title_filter = request.args.get("title")
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
 
     start_ts = _parse_date_to_timestamp(start_date, end_of_day=False)
     end_ts = _parse_date_to_timestamp(end_date, end_of_day=True)
 
-    available_apps = get_available_apps()
     matching_entries = search_entries(
         query=q,
-        app=app_filter,
-        title=title_filter,
         start_time=start_ts,
         end_time=end_ts,
         limit=limit,
@@ -569,19 +552,10 @@ def search():
   </div>
 </div>
 
-<!-- Filter Bar -->
+<!-- Date Filter Bar -->
 <form method="get" action="/search" class="bg-white rounded-xl border border-slate-200 p-4 shadow-xs mb-6">
   <input type="hidden" name="q" value="{{ q }}">
-  <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 items-end">
-    <div>
-      <label class="block text-xs font-semibold text-slate-700 mb-1">Application</label>
-      <select class="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" name="app">
-        <option value="">All Applications</option>
-        {% for a in available_apps %}
-          <option value="{{ a }}" {% if request.args.get('app') == a %}selected{% endif %}>{{ a }}</option>
-        {% endfor %}
-      </select>
-    </div>
+  <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
     <div>
       <label class="block text-xs font-semibold text-slate-700 mb-1">From Date</label>
       <input type="date" class="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" name="start_date" value="{{ request.args.get('start_date', '') }}">
@@ -601,24 +575,28 @@ def search():
   <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
     {% for entry in entries %}
       <div class="bg-white rounded-xl border border-slate-200 shadow-xs hover:shadow-md hover:border-slate-300 transition-all overflow-hidden flex flex-col group">
-        <a href="/capture/{{ entry.id }}" class="block bg-slate-900 aspect-video overflow-hidden relative">
+        <a href="/capture/{{ entry.id }}" class="block bg-slate-950 aspect-video overflow-hidden relative">
           <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
                loading="lazy"
                class="w-full h-full object-cover group-hover:scale-102 transition-transform duration-200" alt="Screenshot">
         </a>
         <div class="p-4 flex flex-col flex-1 justify-between gap-3">
           <div>
-            <div class="flex items-center justify-between text-xs text-slate-500 mb-1">
-              <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium text-[11px] border border-slate-200 truncate max-w-[140px]">{{ entry.app or 'Unknown App' }}</span>
+            <div class="flex items-center justify-between text-xs text-slate-500 mb-2">
+              <span class="font-medium text-slate-700">{{ entry.timestamp | timestamp_to_human_readable }}</span>
               {% if entry.monitor and entry.monitor > 1 %}
                 <span class="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-semibold border border-slate-200">Mon {{ entry.monitor }}</span>
               {% endif %}
-              <span class="font-medium text-slate-500 ml-auto">{{ entry.timestamp | timestamp_to_human_readable }}</span>
             </div>
-            <h3 class="font-bold text-slate-900 text-sm truncate mb-2 mt-1"><a href="/capture/{{ entry.id }}" class="hover:text-indigo-600 transition-colors" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</a></h3>
             {% if entry.text %}
               <p class="text-xs text-slate-600 line-clamp-3 leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100 font-mono">{{ entry.text }}</p>
             {% endif %}
+          </div>
+          <div class="pt-2 border-t border-slate-100 flex items-center justify-between">
+            <span class="text-[11px] text-slate-400 font-mono">#{{ entry.id }}</span>
+            <a href="/capture/{{ entry.id }}" class="text-xs font-semibold text-indigo-600 hover:text-indigo-800 transition-colors">
+              Inspect &rarr;
+            </a>
           </div>
         </div>
       </div>
@@ -629,13 +607,13 @@ def search():
   <nav aria-label="Search pagination" class="mt-8 flex justify-center">
     <div class="inline-flex items-center gap-2">
       {% if page > 1 %}
-        <a class="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors" href="/search?q={{ q }}&page={{ page - 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Previous</a>
+        <a class="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors" href="/search?q={{ q }}&page={{ page - 1 }}&limit={{ limit }}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Previous</a>
       {% else %}
         <span class="px-3 py-1.5 text-xs font-medium text-slate-400 bg-slate-100 border border-slate-200 rounded-lg cursor-not-allowed">Previous</span>
       {% endif %}
       <span class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-lg">Page {{ page }}</span>
       {% if entries|length == limit %}
-        <a class="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors" href="/search?q={{ q }}&page={{ page + 1 }}&limit={{ limit }}{% if request.args.get('app') %}&app={{ request.args.get('app') }}{% endif %}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Next</a>
+        <a class="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors" href="/search?q={{ q }}&page={{ page + 1 }}&limit={{ limit }}{% if request.args.get('start_date') %}&start_date={{ request.args.get('start_date') }}{% endif %}{% if request.args.get('end_date') %}&end_date={{ request.args.get('end_date') }}{% endif %}">Next</a>
       {% else %}
         <span class="px-3 py-1.5 text-xs font-medium text-slate-400 bg-slate-100 border border-slate-200 rounded-lg cursor-not-allowed">Next</span>
       {% endif %}
@@ -656,7 +634,6 @@ def search():
 {% endblock %}
 """,
         entries=matching_entries,
-        available_apps=available_apps,
         q=q,
         page=page,
         limit=limit,
@@ -665,7 +642,7 @@ def search():
 
 @app.route("/capture/<int:entry_id>")
 def capture_detail(entry_id: int):
-    """Renders the detailed single-screenshot inspection page with OCR text panel and copy button."""
+    """Renders the detailed single-screenshot inspection page with OCR text panel, copy button, and delete action."""
     from openrecall.database import get_entry_by_id
 
     entry = get_entry_by_id(entry_id)
@@ -696,15 +673,35 @@ def capture_detail(entry_id: int):
         """
 {% extends "base_template" %}
 {% block content %}
-<div class="flex items-center justify-between mb-6 pb-4 border-b border-slate-200">
+<div class="flex flex-wrap items-center justify-between mb-6 pb-4 border-b border-slate-200 gap-3">
   <a href="/" class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">
     &larr; Back to Timeline
   </a>
+  
   <div class="inline-flex items-center gap-2">
     {% if entry.id > 1 %}
       <a href="/capture/{{ entry.id - 1 }}" class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">&larr; Previous</a>
     {% endif %}
     <a href="/capture/{{ entry.id + 1 }}" class="px-3 py-1.5 text-xs font-semibold text-indigo-600 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors">Next &rarr;</a>
+
+    <!-- Restrained Delete Action Button -->
+    <button onclick="toggleDeleteConfirm()" type="button" class="px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition-colors cursor-pointer ml-2">
+      Delete capture
+    </button>
+  </div>
+</div>
+
+<!-- Inline Delete Confirmation Box (Hidden by Default) -->
+<div id="deleteConfirmCard" class="hidden bg-rose-50 border border-rose-200 rounded-xl p-4 mb-6 text-xs text-rose-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+  <div>
+    <h4 class="font-bold text-slate-900 text-sm mb-0.5">Delete this capture?</h4>
+    <p class="text-slate-600">This removes the screenshot file and its database record permanently.</p>
+  </div>
+  <div class="flex items-center gap-2 shrink-0">
+    <button onclick="toggleDeleteConfirm()" type="button" class="px-3 py-1.5 font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer">Cancel</button>
+    <form action="/api/capture/{{ entry.id }}/delete" method="post" class="inline m-0">
+      <button type="submit" class="px-3 py-1.5 font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg transition-colors cursor-pointer">Confirm Delete</button>
+    </form>
   </div>
 </div>
 
@@ -729,16 +726,8 @@ def capture_detail(entry_id: int):
       
       <dl class="space-y-3 text-xs">
         <div>
-          <dt class="text-slate-400 font-medium">Application</dt>
-          <dd class="text-slate-900 font-semibold truncate mt-0.5" title="{{ entry.app }}">{{ entry.app or 'Unknown App' }}</dd>
-        </div>
-        <div>
-          <dt class="text-slate-400 font-medium">Window Title</dt>
-          <dd class="text-slate-700 truncate mt-0.5" title="{{ entry.title }}">{{ entry.title or 'Untitled Window' }}</dd>
-        </div>
-        <div>
           <dt class="text-slate-400 font-medium">Timestamp</dt>
-          <dd class="text-slate-700 mt-0.5">{{ entry.timestamp | timestamp_to_human_readable }}</dd>
+          <dd class="text-slate-700 font-medium mt-0.5">{{ entry.timestamp | timestamp_to_human_readable }}</dd>
         </div>
         <div>
           <dt class="text-slate-400 font-medium">Database ID</dt>
@@ -778,6 +767,13 @@ function copyOcrText() {
     console.error('Failed to copy OCR text: ', err);
   });
 }
+
+function toggleDeleteConfirm() {
+  const card = document.getElementById('deleteConfirmCard');
+  if (card) {
+    card.classList.toggle('hidden');
+  }
+}
 </script>
 {% endblock %}
 """,
@@ -796,12 +792,22 @@ def api_capture_detail(entry_id: int):
     return jsonify(_entry_to_dict(entry))
 
 
+@app.route("/api/capture/<int:entry_id>/delete", methods=["POST", "DELETE"])
+def api_delete_capture(entry_id: int):
+    """REST API endpoint to safely delete a single capture entry and its WebP screenshot file from disk."""
+    success = delete_entry_by_id(entry_id)
+    if not success:
+        return jsonify({"error": "Capture not found or deletion failed", "id": entry_id}), 404
+
+    if request.is_json or request.headers.get("Accept") == "application/json" or request.args.get("format") == "json":
+        return jsonify({"status": "deleted", "id": entry_id})
+    return redirect("/")
+
+
 @app.route("/api/timeline")
 def api_timeline():
-    """REST API endpoint returning paginated timeline history as JSON with filter support."""
+    """REST API endpoint returning paginated timeline history as JSON with date filter support."""
     page, limit, offset = _get_pagination_params()
-    app_filter = request.args.get("app")
-    title_filter = request.args.get("title")
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
 
@@ -811,8 +817,6 @@ def api_timeline():
     entries = get_timeline_entries(
         start_time=start_ts,
         end_time=end_ts,
-        app=app_filter,
-        title=title_filter,
         limit=limit,
         offset=offset,
     )
@@ -862,11 +866,9 @@ def api_timeline_index():
 
 @app.route("/api/search")
 def api_search():
-    """REST API endpoint returning paginated search results as JSON with filter support."""
+    """REST API endpoint returning paginated search results as JSON with date filter support."""
     q = request.args.get("q", "")
     page, limit, offset = _get_pagination_params()
-    app_filter = request.args.get("app")
-    title_filter = request.args.get("title")
     start_date = request.args.get("start_date")
     end_date = request.args.get("end_date")
 
@@ -875,8 +877,6 @@ def api_search():
 
     entries = search_entries(
         query=q,
-        app=app_filter,
-        title=title_filter,
         start_time=start_ts,
         end_time=end_ts,
         limit=limit,

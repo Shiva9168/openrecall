@@ -112,8 +112,9 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             html = response.get_data(as_text=True)
             self.assertIn("Capture Metadata", html)
-            self.assertIn("Firefox", html)
-            self.assertIn("OpenRecall GitHub Repository", html)
+            self.assertNotIn("Application</dt>", html)
+            self.assertNotIn("Window Title</dt>", html)
+            self.assertIn("https://github.com/Shiva9168/openrecall", html)
             self.assertIn("copyOcrText()", html)
 
     def test_capture_detail_route_invalid_id(self):
@@ -144,11 +145,12 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             response = self.client.get("/")
             self.assertEqual(response.status_code, 200)
             html = response.get_data(as_text=True)
-            self.assertNotIn("http://", html)
-            self.assertNotIn("https://", html)
             self.assertNotIn("bootstrap.min.css", html)
             self.assertNotIn("bootstrap-icons.css", html)
+            self.assertNotIn("cdn.jsdelivr.net", html)
+            self.assertNotIn("cdnjs.cloudflare.com", html)
             self.assertIn("/static/css/output.css", html)
+            self.assertIn("https://github.com/Shiva9168/openrecall", html)
 
     def test_offline_static_css_endpoint(self):
         """Phase 9: Verifies that compiled static CSS output file is served offline via /static/css/output.css."""
@@ -193,19 +195,19 @@ class TestAppRoutesPhase6A(unittest.TestCase):
         policy.resume()
 
     def test_navbar_status_badge_and_toggle_button(self):
-        """Phase 7: Verifies navbar renders Recording Active vs Recording Paused badge."""
+        """Phase 7: Verifies navbar renders Recording vs Paused badge."""
         from openrecall.privacy import get_privacy_policy
         policy = get_privacy_policy()
 
         with patch("openrecall.database.db_path", self.db_path):
             policy.resume()
             res_active = self.client.get("/")
-            self.assertIn("Recording Active", res_active.get_data(as_text=True))
+            self.assertIn("Recording", res_active.get_data(as_text=True))
             self.assertIn("/api/pause", res_active.get_data(as_text=True))
 
             policy.pause()
             res_paused = self.client.get("/")
-            self.assertIn("Recording Paused", res_paused.get_data(as_text=True))
+            self.assertIn("Paused", res_paused.get_data(as_text=True))
             self.assertIn("/api/resume", res_paused.get_data(as_text=True))
 
             policy.resume()
@@ -232,7 +234,7 @@ class TestAppRoutesPhase6A(unittest.TestCase):
     def test_filtered_empty_state_does_not_show_first_run_summary(self):
         """Phase 7: Verifies that when records exist, active filters returning 0 results show filter alert, not first-run."""
         with patch("openrecall.database.db_path", self.db_path):
-            res = self.client.get("/?mode=gallery&app=NonExistentApp999")
+            res = self.client.get("/?mode=gallery&start_date=2099-01-01")
             self.assertEqual(res.status_code, 200)
             html = res.get_data(as_text=True)
 
@@ -336,6 +338,107 @@ class TestAppRoutesPhase6A(unittest.TestCase):
         # Index retrieval must complete in sub-100ms
         self.assertLess(duration, 0.100)
         bench_dir.cleanup()
+
+    def test_phase91_metadata_removal_from_ui(self):
+        """Phase 9.1: Verifies Application and Window metadata are absent from UI pages."""
+        with patch("openrecall.database.db_path", self.db_path):
+            # Check Detail page
+            res_detail = self.client.get("/capture/1")
+            html_detail = res_detail.get_data(as_text=True)
+            self.assertNotIn("Application</dt>", html_detail)
+            self.assertNotIn("Window Title</dt>", html_detail)
+
+            # Check Gallery page
+            res_gallery = self.client.get("/?mode=gallery")
+            html_gallery = res_gallery.get_data(as_text=True)
+            self.assertNotIn("badge-app", html_gallery)
+
+            # Check Search page
+            res_search = self.client.get("/search?q=Flask")
+            html_search = res_search.get_data(as_text=True)
+            self.assertNotIn("badge-app", html_search)
+
+    def test_phase91_search_app_filter_removed(self):
+        """Phase 9.1: Verifies Applications select dropdown is absent from search UI."""
+        with patch("openrecall.database.db_path", self.db_path):
+            res = self.client.get("/search")
+            html = res.get_data(as_text=True)
+            self.assertNotIn('<select class="custom-select" name="app">', html)
+            self.assertNotIn('name="app"', html)
+            self.assertNotIn("All Applications", html)
+
+    def test_phase91_gallery_grid_density_and_ocr_removal(self):
+        """Phase 9.1: Verifies Gallery grid uses 5-column desktop layout and does NOT show extracted text."""
+        with patch("openrecall.database.db_path", self.db_path):
+            res = self.client.get("/?mode=gallery")
+            html = res.get_data(as_text=True)
+            self.assertIn("lg:grid-cols-5", html)
+            # Extracted OCR text should NOT appear on gallery card
+            self.assertNotIn("Flask timeline backend test entry text", html)
+
+    def test_phase91_delete_capture_api_and_ui(self):
+        """Phase 9.1: Verifies individual capture deletion removes DB record, WebP file, and FTS search index entry."""
+        temp_storage = tempfile.TemporaryDirectory()
+        abs_screenshots = os.path.join(temp_storage.name, "screenshots")
+        abs_db = os.path.join(temp_storage.name, "recall.db")
+        os.makedirs(abs_screenshots, exist_ok=True)
+        create_db(abs_db)
+
+        ts = self.now + 4000
+        img_name = f"{ts}_0.webp"
+        img_file_path = os.path.join(abs_screenshots, img_name)
+
+        from openrecall.screenshot import write_screenshot_bytes
+        write_screenshot_bytes(b"RIFF\x14\x00\x00\x00WEBPVP8 \x08\x00\x00\x00\x00\x00\x00\x00", img_file_path)
+
+        with patch("openrecall.database.db_path", abs_db), \
+             patch("openrecall.config.screenshots_path", abs_screenshots), \
+             patch("openrecall.config.db_path", abs_db):
+
+            entry_id = insert_entry("Unique delete test OCR text", ts, image_path=img_name, target_path=abs_db)
+            self.assertTrue(os.path.exists(img_file_path))
+
+            # Verify search finds the entry before deletion
+            res_search_before = self.client.get("/api/search?q=Unique")
+            self.assertEqual(res_search_before.get_json()["count"], 1)
+
+            # Perform POST delete
+            res_delete = self.client.post(f"/api/capture/{entry_id}/delete", json={})
+            self.assertEqual(res_delete.status_code, 200)
+            self.assertEqual(res_delete.get_json(), {"status": "deleted", "id": entry_id})
+
+            # 1. DB record gone
+            res_detail = self.client.get(f"/api/capture/{entry_id}")
+            self.assertEqual(res_detail.status_code, 404)
+
+            # 2. WebP screenshot file deleted on disk
+            self.assertFalse(os.path.exists(img_file_path))
+
+            # 3. FTS search index purged
+            res_search_after = self.client.get("/api/search?q=Unique")
+            self.assertEqual(res_search_after.get_json()["count"], 0)
+
+            # 4. Timeline index updated
+            res_idx = self.client.get("/api/timeline/index")
+            self.assertEqual(res_idx.get_json()["count"], 0)
+
+            # 5. Timeline view shows clean empty state
+            res_timeline = self.client.get("/")
+            self.assertIn("Welcome to OpenRecall", res_timeline.get_data(as_text=True))
+
+        temp_storage.cleanup()
+
+    def test_phase91_delete_capture_safety_and_path_traversal(self):
+        """Phase 9.1: Verifies deletion error handling, missing file gracefulness, and path traversal rejection."""
+        with patch("openrecall.database.db_path", self.db_path):
+            # Invalid ID returns 404
+            res_invalid = self.client.post("/api/capture/999999/delete", json={})
+            self.assertEqual(res_invalid.status_code, 404)
+
+        from openrecall.database import _safe_remove_image_file
+        # Path traversal removal attempt outside storage root must be rejected safely
+        result = _safe_remove_image_file("../../etc/passwd", storage_dir=self.temp_dir.name)
+        self.assertFalse(result)
 
 
 if __name__ == "__main__":
