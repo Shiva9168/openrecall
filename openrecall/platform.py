@@ -9,6 +9,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -158,23 +160,45 @@ class WaylandScreenCastCaptureProvider(ScreenCaptureProvider):
 
     def __init__(self, appdata_dir: Optional[str] = None):
         self.appdata_dir = appdata_dir
-        self._process = None
+        self._proc: Optional[subprocess.Popen] = None
+        self._reader_thread: Optional[threading.Thread] = None
+        self._latest_frame: Optional[np.ndarray] = None
+        self._frame_count = 0
+        self._lock = threading.Lock()
         self._is_degraded = False
 
     def take_screenshots(self, primary_only: bool = False) -> List[np.ndarray]:
         if self._is_degraded:
             return []
 
-        frame = self._acquire_frame()
+        if not self._ensure_started():
+            return []
+
+        # Allow initial frame to populate if process was just started
+        start_time = time.time()
+        while time.time() - start_time < 6.0:
+            with self._lock:
+                if self._latest_frame is not None:
+                    break
+            time.sleep(0.1)
+
+        with self._lock:
+            frame = self._latest_frame
+
         if frame is not None and is_frame_valid(frame):
             return [frame]
         return []
 
-    def _acquire_frame(self) -> Optional[np.ndarray]:
-        import json
-        import struct
-
-        python_candidates = ["/usr/bin/python3", "/usr/bin/python", sys.executable]
+    def _ensure_started(self) -> bool:
+        if self._proc is not None:
+            if self._proc.poll() is None:
+                return True
+            else:
+                code = self._proc.poll()
+                if code in (2, 3):  # 2: no PyGObject/Gst, 3: no DBus
+                    self._is_degraded = True
+                    return False
+                self._proc = None
 
         if not self.appdata_dir:
             try:
@@ -184,154 +208,88 @@ class WaylandScreenCastCaptureProvider(ScreenCaptureProvider):
                 self.appdata_dir = os.path.expanduser("~/.local/share/openrecall")
 
         session_file = os.path.join(self.appdata_dir, "portal_session.json")
+        python_candidates = ["/usr/bin/python3", "/usr/bin/python", sys.executable]
 
-        helper_code = (
-            "import dbus, dbus.mainloop.glib, os, sys, time, struct, json\n"
-            "import gi\n"
-            "try:\n"
-            "    gi.require_version('Gst', '1.0')\n"
-            "    from gi.repository import Gst, GLib\n"
-            "except Exception:\n"
-            "    sys.exit(2)\n"
-            "\n"
-            "Gst.init(None)\n"
-            "dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)\n"
-            "try:\n"
-            "    bus = dbus.SessionBus()\n"
-            "except Exception:\n"
-            "    sys.exit(3)\n"
-            "\n"
-            "session_file = sys.argv[1] if len(sys.argv) > 1 else ''\n"
-            "restore_token = None\n"
-            "if session_file and os.path.exists(session_file):\n"
-            "    try:\n"
-            "        with open(session_file, 'r') as f:\n"
-            "            restore_token = json.load(f).get('restore_token')\n"
-            "    except Exception:\n"
-            "        pass\n"
-            "\n"
-            "try:\n"
-            "    portal = bus.get_object('org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop')\n"
-            "    screencast = dbus.Interface(portal, 'org.freedesktop.portal.ScreenCast')\n"
-            "except Exception:\n"
-            "    sys.exit(3)\n"
-            "\n"
-            "loop = GLib.MainLoop()\n"
-            "state = {'session_path': None, 'fd': None, 'serial': None}\n"
-            "\n"
-            "def save_restore_token(token):\n"
-            "    if session_file and token:\n"
-            "        try:\n"
-            "            os.makedirs(os.path.dirname(session_file), exist_ok=True)\n"
-            "            with open(session_file, 'w') as f:\n"
-            "                json.dump({'restore_token': str(token)}, f)\n"
-            "        except Exception:\n"
-            "            pass\n"
-            "\n"
-            "def on_start(response, results):\n"
-            "    if response == 0:\n"
-            "        streams = results.get('streams', [])\n"
-            "        new_token = results.get('restore_token')\n"
-            "        if new_token:\n"
-            "            save_restore_token(new_token)\n"
-            "        if streams:\n"
-            "            state['serial'] = streams[0][1].get('pipewire-serial', streams[0][0])\n"
-            "            try:\n"
-            "                fd_obj = screencast.OpenPipeWireRemote(state['session_path'], {})\n"
-            "                state['fd'] = fd_obj.take()\n"
-            "            except Exception:\n"
-            "                pass\n"
-            "    loop.quit()\n"
-            "\n"
-            "def on_select_sources(response, results):\n"
-            "    if response == 0:\n"
-            "        opts = {'handle_token': f'req_start_{int(time.time())}'}\n"
-            "        req = screencast.Start(state['session_path'], '', opts)\n"
-            "        bus.add_signal_receiver(on_start, signal_name='Response', dbus_interface='org.freedesktop.portal.Request', path=req)\n"
-            "    else:\n"
-            "        loop.quit()\n"
-            "\n"
-            "def on_create_session(response, results):\n"
-            "    if response == 0 and 'session_handle' in results:\n"
-            "        state['session_path'] = str(results['session_handle'])\n"
-            "        opts = {'types': dbus.UInt32(1), 'multiple': dbus.Boolean(False), 'persist_mode': dbus.UInt32(2), 'handle_token': f'req_select_{int(time.time())}'}\n"
-            "        if restore_token:\n"
-            "            opts['restore_token'] = dbus.String(restore_token)\n"
-            "        req = screencast.SelectSources(state['session_path'], opts)\n"
-            "        bus.add_signal_receiver(on_select_sources, signal_name='Response', dbus_interface='org.freedesktop.portal.Request', path=req)\n"
-            "    else:\n"
-            "        loop.quit()\n"
-            "\n"
-            "try:\n"
-            "    req = screencast.CreateSession({'session_handle_token': f'sess_{int(time.time())}', 'handle_token': f'req_create_{int(time.time())}'})\n"
-            "    bus.add_signal_receiver(on_create_session, signal_name='Response', dbus_interface='org.freedesktop.portal.Request', path=req)\n"
-            "    GLib.timeout_add_seconds(12, loop.quit)\n"
-            "    loop.run()\n"
-            "except Exception:\n"
-            "    sys.exit(4)\n"
-            "\n"
-            "if state['fd'] is None or state['serial'] is None:\n"
-            "    if restore_token and session_file and os.path.exists(session_file):\n"
-            "        try:\n"
-            "            os.remove(session_file)\n"
-            "        except Exception:\n"
-            "            pass\n"
-            "    sys.exit(5)\n"
-            "\n"
-            "pipeline_str = f'pipewiresrc name=src ! videorate ! video/x-raw,framerate=1/10 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink max-buffers=1 drop=true'\n"
-            "try:\n"
-            "    pipeline = Gst.parse_launch(pipeline_str)\n"
-            "    src = pipeline.get_by_name('src')\n"
-            "    src.set_property('fd', state['fd'])\n"
-            "    src.set_property('target-object', str(state['serial']))\n"
-            "    sink = pipeline.get_by_name('sink')\n"
-            "    pipeline.set_state(Gst.State.PLAYING)\n"
-            "    time.sleep(0.5)\n"
-            "    sample = sink.emit('pull-sample')\n"
-            "    if sample:\n"
-            "        caps = sample.get_caps()\n"
-            "        s = caps.get_structure(0)\n"
-            "        w = s.get_int('width')[1]\n"
-            "        h = s.get_int('height')[1]\n"
-            "        buf = sample.get_buffer()\n"
-            "        ok, map_info = buf.map(Gst.MapFlags.READ)\n"
-            "        if ok:\n"
-            "            raw_data = bytes(map_info.data)\n"
-            "            buf.unmap(map_info)\n"
-            "            sys.stdout.buffer.write(struct.pack('<II', w, h) + raw_data)\n"
-            "            sys.stdout.buffer.flush()\n"
-            "            pipeline.set_state(Gst.State.NULL)\n"
-            "            sys.exit(0)\n"
-            "    pipeline.set_state(Gst.State.NULL)\n"
-            "except Exception:\n"
-            "    pass\n"
-            "sys.exit(6)\n"
-        )
+        helper_code = "import dbus, dbus.mainloop.glib, os, sys, time, struct, json\nimport gi\ntry:\n    gi.require_version('Gst', '1.0')\n    from gi.repository import Gst, GLib\nexcept Exception:\n    sys.exit(2)\n\nGst.init(None)\ndbus.mainloop.glib.DBusGMainLoop(set_as_default=True)\ntry:\n    bus = dbus.SessionBus()\nexcept Exception:\n    sys.exit(3)\n\nsession_file = sys.argv[1] if len(sys.argv) > 1 else ''\nrestore_token = None\nif session_file and os.path.exists(session_file):\n    try:\n        with open(session_file, 'r') as f:\n            restore_token = json.load(f).get('restore_token')\n    except Exception:\n        pass\n\ntry:\n    portal = bus.get_object('org.freedesktop.portal.Desktop', '/org/freedesktop/portal/desktop')\n    screencast = dbus.Interface(portal, 'org.freedesktop.portal.ScreenCast')\nexcept Exception:\n    sys.exit(3)\n\nloop = GLib.MainLoop()\nstate = {'session_path': None, 'fd': None, 'serial': None}\n\ndef save_restore_token(token):\n    if session_file and token:\n        try:\n            os.makedirs(os.path.dirname(session_file), exist_ok=True)\n            with open(session_file, 'w') as f:\n                json.dump({'restore_token': str(token)}, f)\n        except Exception:\n            pass\n\ndef on_start(response, results):\n    if response == 0:\n        streams = results.get('streams', [])\n        new_token = results.get('restore_token')\n        if new_token:\n            save_restore_token(new_token)\n        if streams:\n            state['serial'] = streams[0][1].get('pipewire-serial', streams[0][0])\n            try:\n                fd_obj = screencast.OpenPipeWireRemote(state['session_path'], {})\n                state['fd'] = fd_obj.take()\n            except Exception:\n                pass\n    loop.quit()\n\ndef on_select_sources(response, results):\n    if response == 0:\n        opts = {'handle_token': f'req_start_{int(time.time())}'}\n        req = screencast.Start(state['session_path'], '', opts)\n        bus.add_signal_receiver(on_start, signal_name='Response', dbus_interface='org.freedesktop.portal.Request', path=req)\n    else:\n        loop.quit()\n\ndef on_create_session(response, results):\n    if response == 0 and 'session_handle' in results:\n        state['session_path'] = str(results['session_handle'])\n        opts = {'types': dbus.UInt32(1), 'multiple': dbus.Boolean(False), 'persist_mode': dbus.UInt32(2), 'handle_token': f'req_select_{int(time.time())}'}\n        if restore_token:\n            opts['restore_token'] = dbus.String(restore_token)\n        req = screencast.SelectSources(state['session_path'], opts)\n        bus.add_signal_receiver(on_select_sources, signal_name='Response', dbus_interface='org.freedesktop.portal.Request', path=req)\n    else:\n        loop.quit()\n\ntry:\n    req = screencast.CreateSession({'session_handle_token': f'sess_{int(time.time())}', 'handle_token': f'req_create_{int(time.time())}'})\n    bus.add_signal_receiver(on_create_session, signal_name='Response', dbus_interface='org.freedesktop.portal.Request', path=req)\n    timeout_id = GLib.timeout_add_seconds(15, loop.quit)\n    loop.run()\n    GLib.source_remove(timeout_id)\nexcept Exception:\n    sys.exit(4)\n\nif state['fd'] is None or state['serial'] is None:\n    if restore_token and session_file and os.path.exists(session_file):\n        try:\n            os.remove(session_file)\n        except Exception:\n            pass\n    sys.exit(5)\n\npipeline_str = 'pipewiresrc name=src keepalive-time=1000 always-copy=true ! videorate ! video/x-raw,framerate=1/2 ! videoconvert ! video/x-raw,format=RGB ! appsink name=sink max-buffers=1 drop=true emit-signals=true'\ntry:\n    pipeline = Gst.parse_launch(pipeline_str)\n    src = pipeline.get_by_name('src')\n    src.set_property('fd', state['fd'])\n    try:\n        src.set_property('path', str(state['serial']))\n    except Exception:\n        src.set_property('target-object', str(state['serial']))\n    sink = pipeline.get_by_name('sink')\n\n    def on_new_sample(sink):\n        sample = sink.emit('pull-sample')\n        if sample:\n            caps = sample.get_caps()\n            s = caps.get_structure(0)\n            w = s.get_int('width')[1]\n            h = s.get_int('height')[1]\n            buf = sample.get_buffer()\n            ok, map_info = buf.map(Gst.MapFlags.READ)\n            if ok:\n                raw_data = bytes(map_info.data)\n                buf.unmap(map_info)\n                hdr = b'FRAM' + struct.pack('<III', w, h, len(raw_data))\n                os.write(1, hdr + raw_data)\n        return Gst.FlowReturn.OK\n\n    sink.connect('new-sample', on_new_sample)\n    bus_gst = pipeline.get_bus()\n    bus_gst.add_signal_watch()\n    main_loop = GLib.MainLoop()\n    def on_bus_message(bus, msg):\n        if msg.type in (Gst.MessageType.ERROR, Gst.MessageType.EOS):\n            main_loop.quit()\n    bus_gst.connect('message', on_bus_message)\n    pipeline.set_state(Gst.State.PLAYING)\n    main_loop.run()\nexcept Exception:\n    sys.exit(6)\n"
 
         for python_bin in python_candidates:
             if not os.path.exists(python_bin):
                 continue
             try:
-                proc = subprocess.run(
+                proc = subprocess.Popen(
                     [python_bin, "-c", helper_code, session_file],
-                    capture_output=True,
-                    timeout=15,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
                 )
-                if proc.returncode == 0 and len(proc.stdout) > 8:
-                    header = proc.stdout[:8]
-                    w, h = struct.unpack("<II", header)
-                    expected_len = w * h * 3
-                    raw_data = proc.stdout[8 : 8 + expected_len]
-                    if len(raw_data) == expected_len:
-                        arr = np.frombuffer(raw_data, dtype=np.uint8).reshape((h, w, 3))
-                        return arr
-                elif proc.returncode in (2, 3):
-                    self._is_degraded = True
-                    return None
+                self._proc = proc
+                self._reader_thread = threading.Thread(
+                    target=self._reader_loop, args=(proc,), daemon=True
+                )
+                self._reader_thread.start()
+                return True
             except Exception:
                 pass
 
-        return None
+        self._is_degraded = True
+        return False
+
+    def _reader_loop(self, proc: subprocess.Popen):
+        import struct
+
+        def _read_exact(stream, n):
+            buf = bytearray()
+            while len(buf) < n:
+                try:
+                    chunk = stream.read(n - len(buf))
+                except Exception:
+                    return None
+                if not chunk:
+                    return None
+                buf.extend(chunk)
+            return bytes(buf)
+
+        try:
+            while proc.poll() is None:
+                magic = _read_exact(proc.stdout, 4)
+                if magic != b"FRAM":
+                    break
+                hdr = _read_exact(proc.stdout, 12)
+                if not hdr or len(hdr) < 12:
+                    break
+                w, h, data_len = struct.unpack("<III", hdr)
+                if w <= 0 or h <= 0 or w > 7680 or h > 4320 or data_len > 100_000_000:
+                    break
+                raw_data = _read_exact(proc.stdout, data_len)
+                if raw_data and len(raw_data) == data_len:
+                    expected_packed = w * h * 3
+                    if len(raw_data) == expected_packed:
+                        arr = np.frombuffer(raw_data, dtype=np.uint8).reshape((h, w, 3))
+                    elif len(raw_data) > expected_packed and h > 0:
+                        stride = len(raw_data) // h
+                        arr = np.frombuffer(raw_data, dtype=np.uint8).reshape((h, stride))[:, :w * 3].reshape((h, w, 3))
+                    else:
+                        continue
+                    with self._lock:
+                        self._latest_frame = arr
+                        self._frame_count += 1
+        except Exception:
+            pass
+
+    def stop(self):
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+            self._proc = None
+
+    def __del__(self):
+        self.stop()
 
 
 _screen_capture_provider_instance = None
