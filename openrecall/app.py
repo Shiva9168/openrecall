@@ -1,6 +1,8 @@
 """Flask web application and REST API for OpenRecall timeline and search UX."""
 
+import html
 import os
+import re
 import signal
 import sys
 from datetime import datetime, timezone
@@ -28,23 +30,47 @@ from openrecall.database import (
 )
 from openrecall.maintenance import MaintenanceWorker
 from openrecall.ocr import TesseractOCRProvider
+from openrecall.platform import get_platform_provider
 from openrecall.privacy import get_privacy_policy
 from openrecall.screenshot import get_capture_pipeline, record_screenshots_thread
 from openrecall.utils import human_readable_time, timestamp_to_human_readable
 
 app = Flask(__name__)
 
+
+def highlight_search_matches(text: Optional[str], query: Optional[str]) -> str:
+    """Highlights occurrences of query terms in OCR text with <mark> tags safely."""
+    if not text:
+        return ""
+    escaped_text = html.escape(text)
+    if not query or not query.strip():
+        return escaped_text
+
+    words = [re.escape(w) for w in query.strip().split() if w.strip()]
+    if not words:
+        return escaped_text
+
+    pattern = re.compile(r"(" + "|".join(words) + r")", re.IGNORECASE)
+    return pattern.sub(
+        r'<mark class="bg-amber-200 text-amber-950 rounded px-1 font-semibold">\1</mark>',
+        escaped_text,
+    )
+
+
 app.jinja_env.filters["human_readable_time"] = human_readable_time
 app.jinja_env.filters["timestamp_to_human_readable"] = timestamp_to_human_readable
+app.jinja_env.filters["highlight_search_matches"] = highlight_search_matches
 
 
 @app.context_processor
 def inject_global_template_context():
     policy = get_privacy_policy()
     ocr_provider = TesseractOCRProvider()
+    platform_provider = get_platform_provider()
     return {
         "is_paused": policy.is_paused(),
         "ocr_available": ocr_provider.is_available(),
+        "autostart_enabled": platform_provider.is_startup_enabled(),
         "appdata_folder": appdata_folder,
     }
 
@@ -58,9 +84,15 @@ base_template = """
   <title>OpenRecall - Digital Memory</title>
   <link rel="stylesheet" href="/static/css/output.css">
   <style>
-    /* Baseline layout fallbacks */
+    /* Baseline layout fallbacks and keyboard focus enhancements */
     *, *::before, *::after { box-sizing: border-box; }
     body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; background-color: #f8fafc; color: #0f172a; line-height: 1.5; }
+    
+    a:focus-visible, button:focus-visible, input:focus-visible {
+      outline: 2px solid #4f46e5;
+      outline-offset: 2px;
+    }
+    
     .timeline-slider { -webkit-appearance: none; appearance: none; width: 100%; height: 8px; border-radius: 9999px; background: #cbd5e1; outline: none; transition: background 0.15s ease-in-out; }
     .timeline-slider:hover { background: #94a3b8; }
     .timeline-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 20px; height: 20px; border-radius: 50%; background: #4f46e5; border: 2px solid #ffffff; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.15); cursor: pointer; transition: transform 0.1s ease, background-color 0.15s ease; }
@@ -88,23 +120,23 @@ base_template = """
         <!-- Capture Status & Controls -->
         <div class="flex items-center gap-2">
           {% if is_paused %}
-            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200" title="Capturing is paused">
+            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-900 border border-amber-200" title="Capturing is paused">
               <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
               <span>Capture Paused</span>
             </span>
             <form action="/api/resume" method="post" class="inline m-0">
               <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 hover:bg-indigo-100 transition-colors cursor-pointer">
-                Resume
+                Resume Capture
               </button>
             </form>
           {% else %}
-            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200" title="Capturing is active">
+            <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-900 border border-emerald-200" title="Capturing is active">
               <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
               <span>Capture Active</span>
             </span>
             <form action="/api/pause" method="post" class="inline m-0">
               <button type="submit" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 transition-colors cursor-pointer">
-                Pause
+                Pause Capture
               </button>
             </form>
           {% endif %}
@@ -119,7 +151,7 @@ base_template = """
               </svg>
             </div>
             <input class="w-full pl-9 pr-20 py-1.5 text-sm bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all" 
-                   type="search" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search local memory..." aria-label="Search">
+                   type="search" name="q" value="{{ request.args.get('q', '') }}" placeholder="Search local memory..." aria-label="Search local memory">
             <button class="absolute inset-y-1 right-1 px-3 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-md transition-colors cursor-pointer" type="submit">
               Search
             </button>
@@ -135,13 +167,30 @@ base_template = """
     {% block content %}{% endblock %}
   </main>
 
-  <!-- Footer with Open-Source Project Links -->
+  <!-- Footer with Autostart & Open-Source Project Links -->
   <footer class="bg-white border-t border-slate-200 py-4 mt-auto">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-slate-500">
-      <div>OpenRecall &bull; Open-source digital memory assistant</div>
+      <div class="flex items-center gap-3 flex-wrap">
+        <span>OpenRecall &bull; Open-source digital memory assistant</span>
+        <span class="text-slate-300 hidden sm:inline">|</span>
+        <div class="inline-flex items-center gap-1.5" title="System login autostart status">
+          {% if autostart_enabled %}
+            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span class="font-medium text-slate-700">Autostart: Active</span>
+          {% else %}
+            <span class="w-2 h-2 rounded-full bg-slate-300"></span>
+            <span class="font-medium text-slate-500">Autostart: Inactive</span>
+          {% endif %}
+          <button type="button" onclick="toggleAutostartInfo()" class="text-slate-400 hover:text-indigo-600 transition-colors ml-0.5 cursor-pointer" aria-label="Autostart info">
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
       <div class="flex items-center gap-4">
         <a href="https://github.com/Shiva9168/openrecall" target="_blank" rel="noopener noreferrer" 
-           class="hover:text-indigo-600 transition-colors inline-flex items-center gap-1.5 font-medium">
+           class="hover:text-indigo-600 transition-colors inline-flex items-center gap-1.5 font-medium text-slate-600">
           <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
             <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
           </svg>
@@ -149,7 +198,23 @@ base_template = """
         </a>
       </div>
     </div>
+    <div id="autostartInfoModal" class="hidden max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-2 pt-2 border-t border-slate-100 text-xs text-slate-600">
+      <div class="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-start justify-between gap-3">
+        <div>
+          <p class="font-semibold text-slate-800 mb-1">System Login Autostart</p>
+          <p class="text-slate-600 mb-1">OpenRecall can start automatically when you log into your system account. This configuration is stored locally on your device.</p>
+          <p class="text-slate-500 font-mono text-[11px]">To enable or disable via CLI: <code class="bg-slate-200 text-slate-800 px-1.5 py-0.5 rounded">openrecall --enable-autostart</code> or <code class="bg-slate-200 text-slate-800 px-1.5 py-0.5 rounded">openrecall --disable-autostart</code></p>
+        </div>
+        <button type="button" onclick="toggleAutostartInfo()" class="text-slate-400 hover:text-slate-600 font-bold text-sm leading-none cursor-pointer">&times;</button>
+      </div>
+    </div>
   </footer>
+  <script>
+  function toggleAutostartInfo() {
+    const modal = document.getElementById('autostartInfoModal');
+    if (modal) modal.classList.toggle('hidden');
+  }
+  </script>
 </body>
 </html>
 """
@@ -251,6 +316,8 @@ def timeline():
             offset=offset,
         )
 
+        entries_dicts = [_entry_to_dict(e) for e in entries]
+
         return render_template_string(
             """
 {% extends "base_template" %}
@@ -258,7 +325,7 @@ def timeline():
 <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-slate-200 mb-6 gap-4">
   <div>
     <h1 class="text-xl font-bold text-slate-900">Digital Memory Gallery</h1>
-    <p class="text-xs text-slate-500 mt-0.5">Visual grid of screen captures</p>
+    <p class="text-xs text-slate-500 mt-0.5">Visual grid of screen capture moments</p>
   </div>
   <div class="inline-flex rounded-lg p-1 bg-slate-200/70 border border-slate-200">
     <a href="/?mode=timeline" class="px-3 py-1.5 text-xs font-semibold rounded-md text-slate-700 hover:text-slate-900 transition-colors">Timeline View</a>
@@ -272,9 +339,19 @@ def timeline():
     {% for entry in entries %}
       <div class="bg-white rounded-xl border border-slate-200 shadow-xs hover:shadow-md hover:border-slate-300 transition-all overflow-hidden flex flex-col group">
         <a href="/capture/{{ entry.id }}" class="block bg-slate-950 aspect-video overflow-hidden relative">
-          <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
-               loading="lazy"
-               class="w-full h-full object-cover group-hover:scale-103 transition-transform duration-200" alt="Screenshot">
+          {% if entry.file_exists %}
+            <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
+                 loading="lazy" decoding="async"
+                 class="w-full h-full object-cover group-hover:scale-102 transition-transform duration-200" alt="Screenshot"
+                 onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\\'w-full h-full flex flex-col items-center justify-center bg-slate-900 text-amber-400 p-2 text-center\\'><svg class=\\'w-6 h-6 mb-1 text-amber-500\\' fill=\\'none\\' stroke=\\'currentColor\\' viewBox=\\'0 0 24 24\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' stroke-width=\\'2\\' d=\\'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z\\'></path></svg><span class=\\'text-[10px] font-mono font-bold\\'>MISSING_FILE</span></div>';">
+          {% else %}
+            <div class="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-amber-400 p-2 text-center">
+              <svg class="w-6 h-6 mb-1 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+              </svg>
+              <span class="text-[10px] font-mono font-bold">MISSING_FILE</span>
+            </div>
+          {% endif %}
         </a>
         <div class="p-2.5 flex items-center justify-between bg-white border-t border-slate-100 text-xs">
           <span class="font-medium text-slate-700 text-[11px] truncate">{{ entry.timestamp | timestamp_to_human_readable }}</span>
@@ -311,12 +388,12 @@ def timeline():
       </svg>
     </div>
     <h3 class="text-base font-bold text-slate-900 mb-1">No timeline records found</h3>
-    <p class="text-xs text-slate-500 mb-0">No desktop screen captures available matching this criteria.</p>
+    <p class="text-xs text-slate-500 mb-0">No desktop screen captures available in gallery.</p>
   </div>
 {% endif %}
 {% endblock %}
 """,
-            entries=entries,
+            entries=entries_dicts,
             page=page,
             limit=limit,
             total_count=total_count,
@@ -325,6 +402,7 @@ def timeline():
     # Default: Timeline mode with Discrete Range Slider
     latest_ts = bounds.get("latest_ts")
     latest_entry = get_entry_nearest_timestamp(latest_ts) if latest_ts is not None else None
+    latest_entry_dict = _entry_to_dict(latest_entry) if latest_entry else None
 
     return render_template_string(
         """
@@ -345,13 +423,14 @@ def timeline():
   <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-xs mb-6 flex flex-col gap-5">
     <!-- Header Timestamp & Capture Counter -->
     <div class="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-slate-100">
-      <div class="flex items-center gap-2">
-        <svg class="w-5 h-5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <div class="flex items-center gap-2 flex-wrap">
+        <svg class="w-5 h-5 text-indigo-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
         </svg>
         <h2 id="timelineTimeLabel" class="text-base font-bold text-slate-900">
           {{ latest_entry.timestamp | timestamp_to_human_readable }}
         </h2>
+        <span id="timelineTimeGap" class="hidden text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full font-medium"></span>
       </div>
       <span id="timelineCounter" class="inline-flex items-center px-3 py-1 rounded-md text-xs font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 font-mono">
         Capture {{ total_count }} of {{ total_count }}
@@ -366,18 +445,28 @@ def timeline():
       <div class="flex items-center justify-between text-[11px] text-slate-500 font-medium">
         <span>Oldest Capture</span>
         <span class="text-indigo-600 flex items-center gap-1 font-semibold">
-          <span>&larr;</span> <span>Use arrow keys to step frame-by-frame</span> <span>&rarr;</span>
+          <span>&larr;</span> <span>Use Arrow keys to step frame-by-frame</span> <span>&rarr;</span>
         </span>
         <span>Latest Capture</span>
       </div>
     </div>
 
     <!-- Single Screenshot Image Display Frame -->
-    <div class="relative bg-slate-950 rounded-xl overflow-hidden p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[300px]">
+    <div id="timelineImgContainer" class="relative bg-slate-950 rounded-xl overflow-hidden p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[300px]">
       <a id="timelineImgLink" href="/capture/{{ latest_entry.id }}" class="block max-w-full" title="Click for capture details">
         <img id="timelineImg" src="/screenshot/{{ latest_entry.image_path or (latest_entry.timestamp|string + '_0.webp') }}"
-             class="max-h-[65vh] w-auto h-auto object-contain rounded transition-opacity duration-150 mx-auto" alt="Timeline Capture">
+             class="max-h-[65vh] w-auto h-auto object-contain rounded transition-opacity duration-150 mx-auto {% if latest_entry_dict and not latest_entry_dict.file_exists %}hidden{% endif %}" alt="Timeline Capture"
+             onerror="handleTimelineImgError(this);">
       </a>
+      <div id="timelineImgFallback" class="{% if latest_entry_dict and latest_entry_dict.file_exists %}hidden{% endif %} text-center p-8">
+        <div class="w-12 h-12 bg-amber-950/50 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-3 border border-amber-800/50">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+          </svg>
+        </div>
+        <p class="text-xs font-semibold text-amber-400 mb-1">Screenshot file is missing from disk</p>
+        <p class="text-[11px] text-slate-400">Memory record and extracted text remain available.</p>
+      </div>
     </div>
 
     <!-- Extracted Text Snippet Panel -->
@@ -392,12 +481,21 @@ def timeline():
   </div>
 
   <script>
+  function handleTimelineImgError(imgEl) {
+    if (!imgEl) return;
+    imgEl.classList.add('hidden');
+    const fallback = document.getElementById('timelineImgFallback');
+    if (fallback) fallback.classList.remove('hidden');
+  }
+
   (function() {
     const slider = document.getElementById('timelineSlider');
     const timeLabel = document.getElementById('timelineTimeLabel');
+    const timeGapLabel = document.getElementById('timelineTimeGap');
     const counterLabel = document.getElementById('timelineCounter');
     const img = document.getElementById('timelineImg');
     const imgLink = document.getElementById('timelineImgLink');
+    const imgFallback = document.getElementById('timelineImgFallback');
     const snippet = document.getElementById('timelineSnippet');
     if (!slider) return;
 
@@ -414,7 +512,15 @@ def timeline():
     function renderCapture(entry) {
       if (!entry) return;
       if (timeLabel) timeLabel.innerText = entry.human_time || formatTimestamp(entry.timestamp);
-      if (img) img.src = entry.image_url || ('/screenshot/' + entry.image_path);
+      if (img) {
+        img.classList.remove('hidden');
+        img.src = entry.image_url || ('/screenshot/' + entry.image_path);
+      }
+      if (imgFallback) imgFallback.classList.add('hidden');
+      if (!entry.file_exists && imgFallback && img) {
+        img.classList.add('hidden');
+        imgFallback.classList.remove('hidden');
+      }
       if (imgLink) imgLink.href = '/capture/' + entry.id;
       if (snippet) snippet.innerText = entry.text || entry.text_snippet || 'No OCR text extracted for this capture.';
     }
@@ -428,7 +534,7 @@ def timeline():
       fetch('/api/timeline/at?timestamp=' + item.timestamp)
         .then(res => res.json())
         .then(data => {
-          if (reqId !== activeReqId) return; // Stale response protection
+          if (reqId !== activeReqId) return;
           if (data && data.entry) {
             renderCapture(data.entry);
           }
@@ -443,6 +549,28 @@ def timeline():
       if (item) {
         if (timeLabel) timeLabel.innerText = formatTimestamp(item.timestamp);
         if (counterLabel) counterLabel.innerText = 'Capture ' + (boundedIdx + 1) + ' of ' + capturesIndex.length;
+
+        if (boundedIdx > 0 && capturesIndex[boundedIdx - 1]) {
+          const prevTs = capturesIndex[boundedIdx - 1].timestamp;
+          const currTs = item.timestamp;
+          const gapSec = currTs - prevTs;
+          if (gapSec > 300 && timeGapLabel) {
+            const mins = Math.floor(gapSec / 60);
+            const hrs = Math.floor(mins / 60);
+            let gapText = '';
+            if (hrs > 0) {
+              gapText = hrs + 'h ' + (mins % 60) + 'm gap';
+            } else {
+              gapText = mins + 'm gap';
+            }
+            timeGapLabel.innerText = '⏱️ (' + gapText + ' since previous capture)';
+            timeGapLabel.classList.remove('hidden');
+          } else if (timeGapLabel) {
+            timeGapLabel.classList.add('hidden');
+          }
+        } else if (timeGapLabel) {
+          timeGapLabel.classList.add('hidden');
+        }
       }
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(function() {
@@ -450,7 +578,6 @@ def timeline():
       }, 80);
     }
 
-    // Fetch capture index list on load
     fetch('/api/timeline/index')
       .then(res => res.json())
       .then(data => {
@@ -468,7 +595,6 @@ def timeline():
       updateSliderPosition(val);
     });
 
-    // Keyboard Arrow navigation
     document.addEventListener('keydown', function(e) {
       if (!slider || !capturesIndex || capturesIndex.length === 0) return;
       if (document.activeElement && (document.activeElement.tagName === 'INPUT' || document.activeElement.tagName === 'TEXTAREA')) return;
@@ -498,16 +624,16 @@ def timeline():
     </div>
     <h2 class="text-xl font-bold text-slate-900 mb-2">Welcome to OpenRecall</h2>
     <p class="text-sm text-slate-600 mb-6 max-w-lg mx-auto">
-      OpenRecall is active and monitoring your desktop in the background. Visual snapshots will automatically appear here as screen changes occur.
+      OpenRecall runs locally in the background to capture memory snapshots of your screen. As screen activity occurs, memory moments will appear in your timeline.
     </p>
 
     <div class="bg-slate-50 rounded-lg p-4 border border-slate-200 text-left text-xs max-w-md mx-auto space-y-3">
       <div class="flex items-center justify-between pb-2 border-b border-slate-200">
         <span class="font-semibold text-slate-700">Capture Pipeline:</span>
         {% if is_paused %}
-          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">Paused</span>
+          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">Capture Paused</span>
         {% else %}
-          <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Recording Active</span>
+          <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Capture Active</span>
         {% endif %}
       </div>
       <div class="flex items-center justify-between pb-2 border-b border-slate-200">
@@ -515,7 +641,15 @@ def timeline():
         {% if ocr_available %}
           <span class="px-2 py-0.5 rounded bg-sky-100 text-sky-800 font-semibold">Available</span>
         {% else %}
-          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold">Unavailable</span>
+          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold" title="Screenshots captured without text search">Unavailable (Capture still active)</span>
+        {% endif %}
+      </div>
+      <div class="flex items-center justify-between pb-2 border-b border-slate-200">
+        <span class="font-semibold text-slate-700">System Autostart:</span>
+        {% if autostart_enabled %}
+          <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold">Enabled</span>
+        {% else %}
+          <span class="px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-semibold">Disabled</span>
         {% endif %}
       </div>
       <div class="flex items-center justify-between">
@@ -529,6 +663,7 @@ def timeline():
 """,
         total_count=total_count,
         latest_entry=latest_entry,
+        latest_entry_dict=latest_entry_dict,
     )
 
 
@@ -551,6 +686,8 @@ def search():
         offset=offset,
     )
 
+    matching_dicts = [_entry_to_dict(e) for e in matching_entries]
+
     return render_template_string(
         """
 {% extends "base_template" %}
@@ -558,7 +695,7 @@ def search():
 <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-slate-200 mb-6 gap-4">
   <div>
     <h1 class="text-xl font-bold text-slate-900">
-      {% if q %}Search Results for &ldquo;{{ q }}&rdquo;{% else %}Search All Records{% endif %}
+      {% if q %}Search Results for &ldquo;{{ q }}&rdquo;{% else %}Search Memory Records{% endif %}
     </h1>
     <p class="text-xs text-slate-500 mt-0.5">Page {{ page }} &bull; {{ entries|length }} matching captures</p>
   </div>
@@ -588,9 +725,19 @@ def search():
     {% for entry in entries %}
       <div class="bg-white rounded-xl border border-slate-200 shadow-xs hover:shadow-md hover:border-slate-300 transition-all overflow-hidden flex flex-col group">
         <a href="/capture/{{ entry.id }}" class="block bg-slate-950 aspect-video overflow-hidden relative">
-          <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
-               loading="lazy"
-               class="w-full h-full object-cover group-hover:scale-102 transition-transform duration-200" alt="Screenshot">
+          {% if entry.file_exists %}
+            <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}" 
+                 loading="lazy" decoding="async"
+                 class="w-full h-full object-cover group-hover:scale-102 transition-transform duration-200" alt="Screenshot"
+                 onerror="this.onerror=null; this.parentElement.innerHTML='<div class=\\'w-full h-full flex flex-col items-center justify-center bg-slate-900 text-amber-400 p-2 text-center\\'><svg class=\\'w-6 h-6 mb-1 text-amber-500\\' fill=\\'none\\' stroke=\\'currentColor\\' viewBox=\\'0 0 24 24\\'><path stroke-linecap=\\'round\\' stroke-linejoin=\\'round\\' stroke-width=\\'2\\' d=\\'M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z\\'></path></svg><span class=\\'text-[10px] font-mono font-bold\\'>MISSING_FILE</span></div>';">
+          {% else %}
+            <div class="w-full h-full flex flex-col items-center justify-center bg-slate-900 text-amber-400 p-2 text-center">
+              <svg class="w-6 h-6 mb-1 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+              </svg>
+              <span class="text-[10px] font-mono font-bold">MISSING_FILE</span>
+            </div>
+          {% endif %}
         </a>
         <div class="p-4 flex flex-col flex-1 justify-between gap-3">
           <div>
@@ -601,7 +748,9 @@ def search():
               {% endif %}
             </div>
             {% if entry.text %}
-              <p class="text-xs text-slate-600 line-clamp-3 leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100 font-mono">{{ entry.text }}</p>
+              <p class="text-xs text-slate-700 line-clamp-3 leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100 font-mono">
+                {{ entry.text | highlight_search_matches(q) | safe }}
+              </p>
             {% endif %}
           </div>
           <div class="pt-2 border-t border-slate-100 flex items-center justify-between">
@@ -634,18 +783,26 @@ def search():
 
 {% else %}
   <div class="bg-white rounded-xl border border-slate-200 p-8 text-center max-w-md mx-auto my-8 shadow-xs">
-    <div class="w-12 h-12 bg-amber-50 text-amber-500 rounded-full flex items-center justify-center mx-auto mb-3 border border-amber-100">
+    <div class="w-12 h-12 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mx-auto mb-3">
       <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
       </svg>
     </div>
     <h3 class="text-base font-bold text-slate-900 mb-1">No matching memory records</h3>
-    <p class="text-xs text-slate-500 mb-0">No records match your search query &ldquo;{{ q }}&rdquo;.</p>
+    <p class="text-xs text-slate-500 mb-4">No captures match search query &ldquo;{{ q }}&rdquo;.</p>
+    <div class="text-left text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1">
+      <p class="font-semibold text-slate-700">Suggestions:</p>
+      <ul class="list-disc list-inside space-y-0.5 text-[11px] text-slate-500">
+        <li>Try broader search terms or partial words</li>
+        <li>Check or clear date filters</li>
+        <li>Verify Tesseract OCR is installed to extract text from screenshots</li>
+      </ul>
+    </div>
   </div>
 {% endif %}
 {% endblock %}
 """,
-        entries=matching_entries,
+        entries=matching_dicts,
         q=q,
         page=page,
         limit=limit,
@@ -763,7 +920,7 @@ def capture_detail(entry_id: int):
 <div id="deleteConfirmCard" class="hidden bg-rose-50 border border-rose-200 rounded-xl p-4 mb-6 text-xs text-rose-900 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
   <div>
     <h4 class="font-bold text-slate-900 text-sm mb-0.5">Delete this capture?</h4>
-    <p class="text-slate-600">This removes the screenshot file and soft-deletes its record permanently.</p>
+    <p class="text-slate-600">This removes the screenshot file and soft-deletes its memory record from OpenRecall views.</p>
   </div>
   <div class="flex items-center gap-2 shrink-0">
     <button onclick="toggleDeleteConfirm()" type="button" class="px-3 py-1.5 font-semibold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer">Cancel</button>
@@ -775,11 +932,17 @@ def capture_detail(entry_id: int):
 
 <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
   <!-- Screenshot Display or Missing File Card -->
-  <div class="lg:col-span-8">
+  <div class="lg:col-span-8 flex flex-col gap-2">
     {% if file_exists %}
-      <div class="bg-slate-950 rounded-xl overflow-hidden p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[400px]">
-        <img src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}"
-             class="max-h-[75vh] w-auto h-auto object-contain rounded mx-auto" alt="Full Resolution Screenshot">
+      <div class="flex items-center justify-between">
+        <span class="text-xs font-semibold text-slate-500">Screenshot Preview</span>
+        <button id="toggleZoomBtn" type="button" onclick="toggleImageScale()" class="text-xs font-semibold text-indigo-600 hover:text-indigo-800 bg-white border border-slate-300 rounded px-2.5 py-1 transition-colors cursor-pointer">
+          Toggle 1:1 Scale
+        </button>
+      </div>
+      <div id="imgContainer" class="bg-slate-950 rounded-xl overflow-auto p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[400px]">
+        <img id="detailImg" src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}"
+             class="max-h-[75vh] w-auto h-auto object-contain rounded mx-auto transition-all duration-150" alt="Full Resolution Screenshot">
       </div>
     {% else %}
       <div class="bg-slate-900 rounded-xl overflow-hidden p-8 shadow-inner border border-slate-800 flex flex-col items-center justify-center min-h-[400px] text-center">
@@ -790,7 +953,7 @@ def capture_detail(entry_id: int):
         </div>
         <h3 class="text-lg font-bold text-amber-400 mb-2">Screenshot file is missing</h3>
         <p class="text-xs text-slate-300 max-w-md leading-relaxed mb-4">
-          The screenshot file is no longer present at its stored location. The capture metadata and extracted OCR text remain fully available.
+          The screenshot file is no longer present at its stored location on disk. The capture metadata and extracted OCR text remain available below.
         </p>
       </div>
     {% endif %}
@@ -828,7 +991,7 @@ def capture_detail(entry_id: int):
       <hr class="my-4 border-slate-100">
 
       <div class="flex items-center justify-between mb-2">
-        <span class="text-xs font-bold text-slate-700 uppercase tracking-wider">Extracted OCR Text</span>
+        <span class="text-xs font-bold text-slate-700 uppercase tracking-wider">Extracted Text</span>
         {% if entry.text %}
           <button class="px-2 py-1 text-[11px] font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded border border-indigo-200 transition-colors cursor-pointer" onclick="copyOcrText()">Copy Text</button>
         {% endif %}
@@ -858,6 +1021,21 @@ function toggleDeleteConfirm() {
   const card = document.getElementById('deleteConfirmCard');
   if (card) {
     card.classList.toggle('hidden');
+  }
+}
+
+function toggleImageScale() {
+  const img = document.getElementById('detailImg');
+  const btn = document.getElementById('toggleZoomBtn');
+  if (!img) return;
+  if (img.classList.contains('max-h-[75vh]')) {
+    img.classList.remove('max-h-[75vh]', 'w-auto', 'h-auto', 'object-contain');
+    img.classList.add('max-w-none', 'w-auto');
+    if (btn) btn.innerText = 'Fit to Screen';
+  } else {
+    img.classList.remove('max-w-none', 'w-auto');
+    img.classList.add('max-h-[75vh]', 'w-auto', 'h-auto', 'object-contain');
+    if (btn) btn.innerText = 'Toggle 1:1 Scale';
   }
 }
 </script>
