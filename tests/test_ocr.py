@@ -132,6 +132,7 @@ class TestOCRImagePreprocessing:
 
         assert isinstance(pil_img, Image.Image)
         assert pil_img.size == (800, 600)
+        assert pil_img.mode == "L"
 
     def test_preprocess_downscales_4k_image(self):
         # 4K image: 3840 x 2160
@@ -139,10 +140,27 @@ class TestOCRImagePreprocessing:
         pil_img = _preprocess_image_for_ocr(img_array, max_dimension=1920)
 
         assert isinstance(pil_img, Image.Image)
+        assert pil_img.mode == "L"
         w, h = pil_img.size
         assert max(w, h) <= 1920
         # Check aspect ratio preservation: 3840 / 2160 == 1.7777...
         assert abs((w / h) - (3840 / 2160)) < 0.01
+
+    def test_tesseract_sparse_text_mode_fallback(self):
+        """Verifies extract_text tries --psm 11 first and falls back if sparse mode yields no text."""
+        mock_pytesseract = MagicMock()
+        mock_pytesseract.get_tesseract_version.return_value = "5.3.0"
+        # First call (--psm 11) returns empty string, second call returns fallback text
+        mock_pytesseract.image_to_string.side_effect = ["", "Fallback OCR Text"]
+
+        with patch("shutil.which", return_value="/usr/bin/tesseract"), \
+             patch.dict("sys.modules", {"pytesseract": mock_pytesseract}):
+            provider = TesseractOCRProvider()
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            text = provider.extract_text(dummy_img)
+
+            assert text == "Fallback OCR Text"
+            assert mock_pytesseract.image_to_string.call_count == 2
 
     def test_backward_compatible_extract_text_from_image(self):
         dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)

@@ -372,12 +372,12 @@ class CapturePipeline:
             diff = compute_frame_difference(current_shot, last_shot)
 
             if diff >= FRAME_CHANGE_THRESHOLD:
-                self.last_screenshots[idx] = current_shot
                 item = (timestamp, idx, current_shot, app_name, window_title)
 
                 # Bounded queue backpressure policy: if queue is full, drop oldest item
                 try:
                     self.queue.put_nowait(item)
+                    self.last_screenshots[idx] = current_shot
                     changed_count += 1
                     self.last_capture_timestamp = timestamp
                 except queue.Full:
@@ -386,6 +386,7 @@ class CapturePipeline:
                         self.queue.task_done()                  # Immediately balance unfinished_tasks
                         self.frames_dropped += 1
                         self.queue.put_nowait(item)
+                        self.last_screenshots[idx] = current_shot
                         changed_count += 1
                         self.last_capture_timestamp = timestamp
                         logger.warning("Capture queue full. Dropped oldest frame to prevent memory inflation.")

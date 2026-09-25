@@ -53,7 +53,7 @@ def _preprocess_image_for_ocr(
     """Converts numpy array or PIL image to an optimized PIL Image for OCR.
 
     Downscales high-resolution images (e.g. 4K screenshots) to bounded dimensions
-    using high-quality bilinear scaling to preserve small text legibility while
+    and converts to grayscale ('L' mode) to preserve small text legibility while
     keeping RAM and CPU overhead low on 2 GB systems.
     """
     if image is None:
@@ -63,7 +63,11 @@ def _preprocess_image_for_ocr(
         if isinstance(image, np.ndarray):
             if image.size == 0 or image.ndim < 2:
                 return None
-            pil_img = Image.fromarray(image)
+            if image.ndim == 3 and image.shape[2] >= 3:
+                g = (0.2989 * image[..., 0] + 0.5870 * image[..., 1] + 0.1140 * image[..., 2]).astype(np.uint8)
+                pil_img = Image.fromarray(g, mode="L")
+            else:
+                pil_img = Image.fromarray(image)
         elif isinstance(image, Image.Image):
             pil_img = image
         else:
@@ -72,6 +76,9 @@ def _preprocess_image_for_ocr(
         w, h = pil_img.size
         if w < 8 or h < 8:
             return None
+
+        if pil_img.mode != "L":
+            pil_img = pil_img.convert("L")
 
         if max_dimension and max_dimension > 0 and (w > max_dimension or h > max_dimension):
             ratio = min(max_dimension / w, max_dimension / h)
@@ -169,11 +176,27 @@ class TesseractOCRProvider(OCRProvider):
             import pytesseract
 
             _patch_pytesseract_windows_subprocess()
-            text = pytesseract.image_to_string(
-                pil_img,
-                lang=self._lang,
-                timeout=self._timeout,
-            )
+
+            # Fast pass: try sparse text extraction (--psm 11) for GUI desktop screenshots
+            text = ""
+            try:
+                text = pytesseract.image_to_string(
+                    pil_img,
+                    lang=self._lang,
+                    timeout=self._timeout,
+                    config="--psm 11",
+                )
+            except Exception:
+                text = ""
+
+            # Fallback pass: default PSM mode if sparse text mode returned no text
+            if not text or not text.strip():
+                text = pytesseract.image_to_string(
+                    pil_img,
+                    lang=self._lang,
+                    timeout=self._timeout,
+                )
+
             return text.strip()
         except Exception as e:
             err_name = type(e).__name__
