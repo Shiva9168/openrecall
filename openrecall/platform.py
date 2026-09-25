@@ -311,39 +311,90 @@ def get_screen_capture_provider() -> ScreenCaptureProvider:
 
 
 def _get_autostart_command(storage_path: Optional[str] = None) -> str:
-    """Helper function to resolve executable command for OS autostart registration."""
+    """Helper function to resolve executable command for OS autostart registration.
+
+    Guarantees a valid, fully resolved absolute executable path across system Python,
+    virtual environments, installed wheels, and editable/development installs.
+    """
     import shutil
+
     base_cmd = ""
+
     if sys.platform == "win32":
-        bg_bin = shutil.which("openrecall-bg") or shutil.which("openrecall-bg.exe")
-        if not bg_bin and sys.executable:
-            python_dir = os.path.dirname(sys.executable)
-            possible_bg = os.path.join(python_dir, "openrecall-bg.exe")
-            if os.path.exists(possible_bg):
-                bg_bin = possible_bg
-        if bg_bin:
-            base_cmd = f'"{os.path.normpath(bg_bin)}" --background'
+        candidate_dirs = []
 
-        if not base_cmd and sys.executable:
-            python_dir = os.path.dirname(sys.executable)
-            pythonw = os.path.join(python_dir, "pythonw.exe")
-            if os.path.exists(pythonw):
-                base_cmd = f'"{os.path.normpath(pythonw)}" -m openrecall.app --background'
+        if sys.executable:
+            exec_abs = os.path.abspath(sys.executable)
+            py_dir = os.path.dirname(exec_abs)
+            candidate_dirs.append(py_dir)
+            scripts_subdir = os.path.join(py_dir, "Scripts")
+            if os.path.exists(scripts_subdir):
+                candidate_dirs.append(scripts_subdir)
 
-    if not base_cmd:
-        openrecall_bin = shutil.which("openrecall") or shutil.which("openrecall.exe")
+        if sys.argv and sys.argv[0]:
+            argv_abs = os.path.abspath(sys.argv[0])
+            argv_dir = os.path.dirname(argv_abs)
+            if argv_dir not in candidate_dirs:
+                candidate_dirs.append(argv_dir)
+
+        # 1. Look for openrecall-bg.exe in candidate directories
+        for cdir in candidate_dirs:
+            target = os.path.abspath(os.path.join(cdir, "openrecall-bg.exe"))
+            if os.path.exists(target):
+                base_cmd = f'"{target}" --background'
+                break
+
+        # 2. Check PATH via shutil.which for openrecall-bg
+        if not base_cmd:
+            which_bg = shutil.which("openrecall-bg") or shutil.which("openrecall-bg.exe")
+            if which_bg:
+                abs_bg = os.path.abspath(os.path.normpath(which_bg))
+                if os.path.isabs(abs_bg) and os.path.exists(abs_bg):
+                    base_cmd = f'"{abs_bg}" --background'
+
+        # 3. Look for pythonw.exe module invocation
+        if not base_cmd:
+            for cdir in candidate_dirs:
+                pythonw = os.path.abspath(os.path.join(cdir, "pythonw.exe"))
+                if os.path.exists(pythonw):
+                    base_cmd = f'"{pythonw}" -m openrecall.app --background'
+                    break
+
+        # 4. Look for openrecall.exe in candidate directories
+        if not base_cmd:
+            for cdir in candidate_dirs:
+                target = os.path.abspath(os.path.join(cdir, "openrecall.exe"))
+                if os.path.exists(target):
+                    base_cmd = f'"{target}" --background'
+                    break
+
+        # 5. Check PATH via shutil.which for openrecall
+        if not base_cmd:
+            which_openrecall = shutil.which("openrecall") or shutil.which("openrecall.exe")
+            if which_openrecall:
+                abs_or = os.path.abspath(os.path.normpath(which_openrecall))
+                if os.path.isabs(abs_or) and os.path.exists(abs_or):
+                    base_cmd = f'"{abs_or}" --background'
+
+        # 6. Fallback: sys.executable module invocation
+        if not base_cmd:
+            py_bin = os.path.abspath(sys.executable) if sys.executable else "python"
+            base_cmd = f'"{py_bin}" -m openrecall.app --background'
+
+    else:
+        openrecall_bin = shutil.which("openrecall")
         if not openrecall_bin and sys.executable:
-            python_dir = os.path.dirname(sys.executable)
-            possible_bin = os.path.join(python_dir, "openrecall.exe" if sys.platform == "win32" else "openrecall")
-            if os.path.exists(possible_bin):
-                openrecall_bin = possible_bin
+            py_dir = os.path.dirname(os.path.abspath(sys.executable))
+            possible = os.path.join(py_dir, "openrecall")
+            if os.path.exists(possible):
+                openrecall_bin = possible
 
         if openrecall_bin:
-            base_cmd = f'"{os.path.normpath(openrecall_bin)}" --background'
-
-    if not base_cmd:
-        python_bin = sys.executable or ("pythonw.exe" if sys.platform == "win32" else "python3")
-        base_cmd = f'"{os.path.normpath(python_bin)}" -m openrecall.app --background'
+            abs_bin = os.path.abspath(os.path.normpath(openrecall_bin))
+            base_cmd = f'"{abs_bin}" --background'
+        else:
+            py_bin = os.path.abspath(sys.executable) if sys.executable else "python3"
+            base_cmd = f'"{py_bin}" -m openrecall.app --background'
 
     if storage_path is None:
         try:

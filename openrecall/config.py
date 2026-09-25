@@ -142,6 +142,24 @@ try:
 except Exception:
     args = parser.parse_args([])
 
+is_bg_entry = False
+if sys.argv and sys.argv[0]:
+    base_name = os.path.basename(sys.argv[0]).lower()
+    if "openrecall-bg" in base_name or "openrecall_bg" in base_name:
+        is_bg_entry = True
+
+if is_bg_entry and hasattr(args, "background"):
+    args.background = True
+
+if sys.platform == "win32" and (is_bg_entry or getattr(args, "background", False)):
+    try:
+        import ctypes
+        ctypes.windll.kernel32.FreeConsole()
+    except Exception:
+        pass
+    sys.stdout = SafeStreamWrapper(None)
+    sys.stderr = SafeStreamWrapper(None)
+
 
 def get_appdata_folder(app_name="openrecall"):
     if sys.platform == "win32":
