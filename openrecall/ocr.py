@@ -70,7 +70,7 @@ def _preprocess_image_for_ocr(
             return None
 
         w, h = pil_img.size
-        if w == 0 or h == 0:
+        if w < 8 or h < 8:
             return None
 
         if max_dimension and max_dimension > 0 and (w > max_dimension or h > max_dimension):
@@ -124,23 +124,24 @@ _patch_pytesseract_windows_subprocess()
 class TesseractOCRProvider(OCRProvider):
     """Local Tesseract OCR provider using pytesseract binding."""
 
+    _cached_availability: Optional[bool] = None
+
     def __init__(self, lang: str = OCR_LANG, timeout: float = 10.0):
         self._lang = lang
         self._timeout = timeout
-        self._checked_availability: Optional[bool] = None
 
     @property
     def name(self) -> str:
         return "tesseract"
 
     def is_available(self) -> bool:
-        if self._checked_availability is not None:
-            return self._checked_availability
+        if TesseractOCRProvider._cached_availability is not None:
+            return TesseractOCRProvider._cached_availability
 
         tesseract_bin = shutil.which("tesseract")
         if not tesseract_bin:
             logger.info("Tesseract binary not found on system PATH.")
-            self._checked_availability = False
+            TesseractOCRProvider._cached_availability = False
             return False
 
         try:
@@ -148,12 +149,12 @@ class TesseractOCRProvider(OCRProvider):
 
             _patch_pytesseract_windows_subprocess()
             pytesseract.get_tesseract_version()
-            self._checked_availability = True
+            TesseractOCRProvider._cached_availability = True
             logger.info(f"Tesseract OCR engine initialized successfully (path: {tesseract_bin}).")
             return True
         except Exception as e:
             logger.warning(f"Tesseract OCR availability check failed: {e}")
-            self._checked_availability = False
+            TesseractOCRProvider._cached_availability = False
             return False
 
     def extract_text(self, image: Union[np.ndarray, Image.Image]) -> str:
@@ -175,7 +176,11 @@ class TesseractOCRProvider(OCRProvider):
             )
             return text.strip()
         except Exception as e:
-            logger.error(f"Tesseract OCR extraction failed: {e}")
+            err_name = type(e).__name__
+            if "Timeout" in err_name or "Tesseract" in err_name or "timeout" in str(e).lower():
+                logger.warning(f"Tesseract OCR process warning or timeout: {e}")
+            else:
+                logger.error(f"Tesseract OCR extraction failed: {e}")
             return ""
 
 
@@ -233,6 +238,7 @@ def reset_ocr_provider() -> None:
     """Resets cached active OCR provider instance (useful for testing)."""
     global _active_provider
     _active_provider = None
+    TesseractOCRProvider._cached_availability = None
 
 
 def extract_text_from_image(image: Union[np.ndarray, Image.Image]) -> str:

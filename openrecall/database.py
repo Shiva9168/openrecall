@@ -455,20 +455,9 @@ def get_total_entries_count(target_path: Optional[str] = None) -> int:
 
 
 def _get_historical_db_paths(target_path: Optional[str] = None) -> List[str]:
-    """Helper to return active DB path and (if distinct & valid v2 schema) default DB path."""
-    from openrecall.config import get_appdata_folder
+    """Helper to return active DB path for strict storage isolation."""
     active = target_path or db_path
-    paths = [active]
-    try:
-        default_folder = get_appdata_folder()
-        default_db = os.path.normpath(os.path.join(default_folder, "recall.db"))
-        norm_active = os.path.normpath(active)
-        if norm_active != default_db and os.path.exists(default_db) and os.path.getsize(default_db) > 0:
-            if get_schema_version(default_db) == SCHEMA_VERSION:
-                paths.append(default_db)
-    except Exception:
-        pass
-    return paths
+    return [active]
 
 
 def _connect_readonly_db(db_file: str) -> sqlite3.Connection:

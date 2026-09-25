@@ -1256,6 +1256,66 @@ def api_resume():
     return redirect(request.referrer or "/")
 
 
+_active_pipeline = None
+_active_maintenance_worker = None
+_active_instance_lock = None
+
+
+@app.route("/api/shutdown", methods=["POST"])
+def api_shutdown():
+    """POST endpoint to request graceful shutdown of OpenRecall background process."""
+    remote_addr = request.remote_addr
+    if remote_addr not in ("127.0.0.1", "::1", "localhost"):
+        return jsonify({"status": "error", "message": "Unauthorized request origin"}), 403
+
+    def _do_shutdown():
+        import time
+        time.sleep(0.3)
+        print("Shutdown requested via API. Stopping OpenRecall background process...")
+        if _active_pipeline is not None:
+            try:
+                _active_pipeline.stop(timeout=2.0)
+            except Exception:
+                pass
+        if _active_maintenance_worker is not None:
+            try:
+                _active_maintenance_worker.stop(timeout=2.0)
+            except Exception:
+                pass
+        if _active_instance_lock is not None:
+            try:
+                _active_instance_lock.release()
+            except Exception:
+                pass
+        os._exit(0)
+
+    Thread(target=_do_shutdown, daemon=True).start()
+    return jsonify({"status": "ok", "message": "OpenRecall shutdown initiated"}), 200
+
+
+def stop_running_instance() -> bool:
+    """Attempts to send shutdown request to running instance on port 8082."""
+    import urllib.request
+    import urllib.error
+
+    url = "http://127.0.0.1:8082/api/shutdown"
+    req = urllib.request.Request(
+        url, data=b"{}", headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            if resp.status == 200:
+                print("OpenRecall stopped successfully.")
+                return True
+    except (urllib.error.URLError, TimeoutError, OSError):
+        pass
+    except Exception:
+        pass
+
+    print("OpenRecall is not currently running.")
+    return False
+
+
 @app.route("/screenshot/<filename>")
 def serve_image(filename):
     """Serves WebP screenshot files safely from normalized absolute active and historical appdata locations."""
@@ -1321,6 +1381,11 @@ def main():
     from openrecall.platform import get_platform_provider
 
     ensure_valid_standard_streams()
+
+    if getattr(args, "stop", False):
+        stop_running_instance()
+        sys.exit(0)
+
     log_startup_diagnostic("MAIN_ENTER", "Entering openrecall.app:main()")
 
     if sys.platform == "win32" and getattr(args, "background", False):
@@ -1337,10 +1402,14 @@ def main():
         # 1. Single-instance lock and duplicate startup check
         lock_file = os.path.join(appdata_folder, "openrecall.lock")
         instance_lock = SingleInstanceLock(lock_file)
+        global _active_instance_lock
+        _active_instance_lock = instance_lock
+
+        target_storage_path = getattr(args, "storage_path", None)
 
         if not instance_lock.acquire() or check_existing_instance_running(port=8082):
             if getattr(args, "enable_autostart", False):
-                if get_platform_provider().enable_startup():
+                if get_platform_provider().enable_startup(storage_path=target_storage_path):
                     print("Successfully enabled system autostart.")
                 else:
                     print("Failed to enable system autostart.")
@@ -1359,7 +1428,7 @@ def main():
         print(f"Appdata folder: {appdata_folder}")
 
         if getattr(args, "enable_autostart", False):
-            if get_platform_provider().enable_startup():
+            if get_platform_provider().enable_startup(storage_path=target_storage_path):
                 print("Successfully enabled system autostart.")
             else:
                 print("Failed to enable system autostart.")
@@ -1378,11 +1447,15 @@ def main():
         # 3. Start CapturePipeline
         log_startup_diagnostic("PIPELINE_START")
         pipeline = get_capture_pipeline()
+        global _active_pipeline
+        _active_pipeline = pipeline
         pipeline.start()
 
         # 4. Start MaintenanceWorker
         log_startup_diagnostic("MAINTENANCE_START")
         maintenance_worker = MaintenanceWorker(storage_lock=pipeline.storage_lock)
+        global _active_maintenance_worker
+        _active_maintenance_worker = maintenance_worker
         maintenance_worker.start()
 
         # 5. Graceful OS signal handling (SIGINT, SIGTERM)

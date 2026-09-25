@@ -129,6 +129,13 @@ parser.add_argument(
     help="Run OpenRecall silently in the background without a visible console window",
 )
 
+parser.add_argument(
+    "--stop",
+    action="store_true",
+    default=False,
+    help="Stop running background OpenRecall instance gracefully",
+)
+
 # Parse args safely with fallback when imported in test runners
 try:
     args, _ = parser.parse_known_args()

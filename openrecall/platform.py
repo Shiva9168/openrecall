@@ -100,7 +100,7 @@ class StartupIntegrationProvider(abc.ABC):
     """Abstract provider for OS startup registration."""
 
     @abc.abstractmethod
-    def enable_startup(self) -> bool:
+    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
         """Enables launching OpenRecall on system startup."""
         pass
 
@@ -310,9 +310,10 @@ def get_screen_capture_provider() -> ScreenCaptureProvider:
     return _screen_capture_provider_instance
 
 
-def _get_autostart_command() -> str:
+def _get_autostart_command(storage_path: Optional[str] = None) -> str:
     """Helper function to resolve executable command for OS autostart registration."""
     import shutil
+    base_cmd = ""
     if sys.platform == "win32":
         bg_bin = shutil.which("openrecall-bg") or shutil.which("openrecall-bg.exe")
         if not bg_bin and sys.executable:
@@ -321,26 +322,42 @@ def _get_autostart_command() -> str:
             if os.path.exists(possible_bg):
                 bg_bin = possible_bg
         if bg_bin:
-            return f'"{os.path.normpath(bg_bin)}" --background'
+            base_cmd = f'"{os.path.normpath(bg_bin)}" --background'
 
-        if sys.executable:
+        if not base_cmd and sys.executable:
             python_dir = os.path.dirname(sys.executable)
             pythonw = os.path.join(python_dir, "pythonw.exe")
             if os.path.exists(pythonw):
-                return f'"{os.path.normpath(pythonw)}" -m openrecall.app --background'
+                base_cmd = f'"{os.path.normpath(pythonw)}" -m openrecall.app --background'
 
-    openrecall_bin = shutil.which("openrecall") or shutil.which("openrecall.exe")
-    if not openrecall_bin and sys.executable:
-        python_dir = os.path.dirname(sys.executable)
-        possible_bin = os.path.join(python_dir, "openrecall.exe" if sys.platform == "win32" else "openrecall")
-        if os.path.exists(possible_bin):
-            openrecall_bin = possible_bin
+    if not base_cmd:
+        openrecall_bin = shutil.which("openrecall") or shutil.which("openrecall.exe")
+        if not openrecall_bin and sys.executable:
+            python_dir = os.path.dirname(sys.executable)
+            possible_bin = os.path.join(python_dir, "openrecall.exe" if sys.platform == "win32" else "openrecall")
+            if os.path.exists(possible_bin):
+                openrecall_bin = possible_bin
 
-    if openrecall_bin:
-        return f'"{os.path.normpath(openrecall_bin)}" --background'
+        if openrecall_bin:
+            base_cmd = f'"{os.path.normpath(openrecall_bin)}" --background'
 
-    python_bin = sys.executable or ("pythonw.exe" if sys.platform == "win32" else "python3")
-    return f'"{os.path.normpath(python_bin)}" -m openrecall.app --background'
+    if not base_cmd:
+        python_bin = sys.executable or ("pythonw.exe" if sys.platform == "win32" else "python3")
+        base_cmd = f'"{os.path.normpath(python_bin)}" -m openrecall.app --background'
+
+    if storage_path is None:
+        try:
+            from openrecall.config import args
+            if getattr(args, "storage_path", None):
+                storage_path = args.storage_path
+        except Exception:
+            pass
+
+    if storage_path:
+        norm_path = os.path.abspath(os.path.expanduser(os.path.normpath(storage_path)))
+        base_cmd += f' --storage-path "{norm_path}"'
+
+    return base_cmd
 
 
 class LinuxPlatformProvider(
@@ -368,12 +385,12 @@ class LinuxPlatformProvider(
         except Exception:
             return None
 
-    def enable_startup(self) -> bool:
+    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
         try:
             autostart_dir = os.path.expanduser("~/.config/autostart")
             os.makedirs(autostart_dir, exist_ok=True)
             desktop_file = os.path.join(autostart_dir, "openrecall.desktop")
-            cmd = _get_autostart_command()
+            cmd = _get_autostart_command(storage_path=storage_path)
             with open(desktop_file, "w") as f:
                 f.write(
                     "[Desktop Entry]\n"
@@ -509,7 +526,7 @@ class WindowsPlatformProvider(
         except Exception:
             return None
 
-    def enable_startup(self) -> bool:
+    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
         try:
             import winreg
 
@@ -519,7 +536,7 @@ class WindowsPlatformProvider(
                 0,
                 winreg.KEY_SET_VALUE,
             )
-            cmd = _get_autostart_command()
+            cmd = _get_autostart_command(storage_path=storage_path)
             winreg.SetValueEx(key, "OpenRecall", 0, winreg.REG_SZ, cmd)
             winreg.CloseKey(key)
             return True
@@ -618,14 +635,14 @@ class MacOSPlatformProvider(
             pass
         return None
 
-    def enable_startup(self) -> bool:
+    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
         try:
             plist_path = self._get_launchagent_path()
             dir_name = os.path.dirname(plist_path)
             if not os.path.exists(dir_name):
                 os.makedirs(dir_name, exist_ok=True)
 
-            cmd = _get_autostart_command()
+            cmd = _get_autostart_command(storage_path=storage_path)
             import shlex
 
             program_args = shlex.split(cmd)
@@ -690,7 +707,7 @@ class FallbackPlatformProvider(
     def get_idle_seconds(self) -> Optional[float]:
         return 0.0
 
-    def enable_startup(self) -> bool:
+    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
         return False
 
     def disable_startup(self) -> bool:
