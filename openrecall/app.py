@@ -327,8 +327,25 @@ def _parse_date_to_timestamp(date_str: Optional[str], end_of_day: bool = False) 
 def _entry_to_dict(entry) -> Dict[str, Any]:
     """Serializes a database Entry into a clean JSON-friendly dictionary."""
     import openrecall.config as config
+    from openrecall.ocr import get_ocr_provider, OCR_FAILED_SENTINEL
+
     text_val = entry.text or ""
-    snippet = text_val[:200] + ("..." if len(text_val) > 200 else "")
+    ocr_available = get_ocr_provider().is_available()
+
+    if not ocr_available:
+        ocr_status = "unavailable"
+        clean_text = ""
+    elif text_val == OCR_FAILED_SENTINEL:
+        ocr_status = "failed"
+        clean_text = ""
+    elif text_val.strip():
+        ocr_status = "success"
+        clean_text = text_val.strip()
+    else:
+        ocr_status = "empty"
+        clean_text = ""
+
+    snippet = clean_text[:200] + ("..." if len(clean_text) > 200 else "")
     img_name = entry.image_path or (f"{entry.timestamp}_0.webp" if entry.timestamp else "Unavailable")
 
     file_exists = False
@@ -350,7 +367,9 @@ def _entry_to_dict(entry) -> Dict[str, Any]:
         "file_exists": file_exists,
         "is_deleted": getattr(entry, "is_deleted", 0),
         "text_snippet": snippet,
-        "text": text_val,
+        "text": clean_text,
+        "raw_text": text_val,
+        "ocr_status": ocr_status,
         "platform": entry.platform,
         "monitor": entry.monitor,
     }
@@ -1055,14 +1074,45 @@ def capture_detail(entry_id: int):
 
       <div class="flex items-center justify-between mb-2">
         <span class="text-xs font-bold text-slate-700 uppercase tracking-wider">Extracted Text</span>
-        {% if entry.text %}
+        {% if entry_dict.ocr_status == 'success' %}
           <button class="px-2 py-1 text-[11px] font-semibold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded border border-indigo-200 transition-colors cursor-pointer" onclick="copyOcrText()">Copy Text</button>
         {% endif %}
       </div>
-      {% if entry.text %}
-        <pre id="ocrTextBlock" class="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs text-slate-700 font-mono max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">{{ entry.text }}</pre>
-      {% else %}
-        <p class="text-xs text-slate-400 italic">No OCR text extracted for this capture.</p>
+      {% if entry_dict.ocr_status == 'success' %}
+        <pre id="ocrTextBlock" class="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs text-slate-700 font-mono max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">{{ entry_dict.text }}</pre>
+      {% elif entry_dict.ocr_status == 'empty' %}
+        <p class="text-xs text-slate-500 italic bg-slate-50 p-3 rounded-lg border border-slate-200">
+          OCR processed this capture, but no recognizable text was found.
+        </p>
+      {% elif entry_dict.ocr_status == 'failed' %}
+        <div class="bg-rose-50 border border-rose-200/80 rounded-lg p-3 text-xs text-rose-900 space-y-1">
+          <div class="flex items-center gap-1.5 font-semibold text-rose-800">
+            <svg class="w-4 h-4 text-rose-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+            </svg>
+            <span>OCR Process Warning</span>
+          </div>
+          <p class="text-[11px] text-rose-700 leading-relaxed">
+            OCR execution failed or timed out during processing for this capture.
+          </p>
+        </div>
+      {% elif entry_dict.ocr_status == 'unavailable' %}
+        <div class="bg-amber-50 border border-amber-200/80 rounded-lg p-3 text-xs text-amber-900 space-y-2">
+          <div class="flex items-center gap-1.5 font-semibold text-amber-800">
+            <svg class="w-4 h-4 text-amber-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
+            </svg>
+            <span>OCR Unavailable</span>
+          </div>
+          <p class="text-[11px] text-amber-700 leading-relaxed">
+            Tesseract was not detected on this system. Install Tesseract and make sure it is available in PATH to extract text from screenshots.
+          </p>
+          <div class="pt-1">
+            <a href="https://github.com/Shiva9168/openrecall#ocr-setup" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 font-semibold text-indigo-700 hover:text-indigo-900 transition-colors text-[11px]">
+              <span>View installation guide</span> &rarr;
+            </a>
+          </div>
+        </div>
       {% endif %}
     </div>
   </div>
@@ -1105,6 +1155,7 @@ function toggleImageScale() {
 {% endblock %}
 """,
         entry=entry,
+        entry_dict=_entry_to_dict(entry),
         file_exists=file_exists,
         file_name_display=file_name_display,
         file_path_display=file_path_display,

@@ -430,7 +430,7 @@ class CapturePipeline:
                     self._handle_ocr_error(ocr_err)
                     text = ""
 
-                embedding = get_embedding(text) if text and text.strip() else None
+                embedding = get_embedding(text) if text and text.strip() and text != "__OCR_FAILED__" else None
 
                 # Pre-encode WebP image bytes lock-free in-memory
                 webp_bytes = encode_screenshot_bytes(shot_array, quality=80)

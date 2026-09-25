@@ -67,6 +67,8 @@ class TestOCRProviders:
             mock_pytesseract.image_to_string.assert_called_once()
 
     def test_tesseract_ocr_provider_exception_handling(self):
+        from openrecall.ocr import OCR_FAILED_SENTINEL, OCR_STATUS_FAILED
+
         mock_pytesseract = MagicMock()
         mock_pytesseract.get_tesseract_version.return_value = "5.3.0"
         mock_pytesseract.image_to_string.side_effect = RuntimeError("OCR binary timeout")
@@ -78,7 +80,52 @@ class TestOCRProviders:
 
             dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
             text = provider.extract_text(dummy_img)
+            assert text == OCR_FAILED_SENTINEL
+
+            clean_text, status = provider.extract_text_with_status(dummy_img)
+            assert clean_text == ""
+            assert status == OCR_STATUS_FAILED
+
+    def test_ocr_provider_status_semantics(self):
+        from openrecall.ocr import (
+            OCR_STATUS_SUCCESS,
+            OCR_STATUS_EMPTY,
+            OCR_STATUS_UNAVAILABLE,
+        )
+
+        # 1. Available with text -> success
+        reset_ocr_provider()
+        mock_pytesseract = MagicMock()
+        mock_pytesseract.get_tesseract_version.return_value = "5.3.0"
+        mock_pytesseract.image_to_string.return_value = "Sample OCR Text"
+
+        with patch("shutil.which", return_value="/usr/bin/tesseract"), \
+             patch.dict("sys.modules", {"pytesseract": mock_pytesseract}):
+            provider = TesseractOCRProvider()
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            text, status = provider.extract_text_with_status(dummy_img)
+            assert text == "Sample OCR Text"
+            assert status == OCR_STATUS_SUCCESS
+
+        # 2. Available with empty text -> empty
+        reset_ocr_provider()
+        mock_pytesseract.image_to_string.return_value = "   "
+        with patch("shutil.which", return_value="/usr/bin/tesseract"), \
+             patch.dict("sys.modules", {"pytesseract": mock_pytesseract}):
+            provider = TesseractOCRProvider()
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            text, status = provider.extract_text_with_status(dummy_img)
             assert text == ""
+            assert status == OCR_STATUS_EMPTY
+
+        # 3. Binary missing -> unavailable
+        reset_ocr_provider()
+        with patch("shutil.which", return_value=None):
+            provider = TesseractOCRProvider()
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            text, status = provider.extract_text_with_status(dummy_img)
+            assert text == ""
+            assert status == OCR_STATUS_UNAVAILABLE
 
     def test_ocr_factory_auto_fallback(self):
         with patch("shutil.which", return_value=None):
@@ -101,19 +148,23 @@ class TestOCRProviders:
     def test_windows_tesseract_subprocess_creationflags_patch(self):
         """Verifies that pytesseract subprocess_args on Windows includes CREATE_NO_WINDOW flag."""
         from openrecall.ocr import _patch_pytesseract_windows_subprocess
+        try:
+            import pytesseract.pytesseract as pt
+        except ImportError:
+            pytest.skip("pytesseract not installed")
 
-        mock_pt = MagicMock()
-        mock_pt.subprocess_args.return_value = {
+        orig_fn = MagicMock(return_value={
             "stdin": -1,
             "stderr": -1,
             "startupinfo": None,
             "env": {},
-        }
-        mock_pt._openrecall_patched = False
+        })
+        if hasattr(pt, "_openrecall_patched"):
+            delattr(pt, "_openrecall_patched")
 
-        with patch("sys.platform", "win32"), patch.dict("sys.modules", {"pytesseract.pytesseract": mock_pt}):
+        with patch("sys.platform", "win32"), patch.object(pt, "subprocess_args", orig_fn):
             _patch_pytesseract_windows_subprocess()
-            res = mock_pt.subprocess_args()
+            res = pt.subprocess_args()
             assert "creationflags" in res
             assert res["creationflags"] & 0x08000000 == 0x08000000
 

@@ -12,11 +12,20 @@ import shutil
 from typing import Optional, Union
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 from openrecall.config import OCR_ENGINE, OCR_LANG, OCR_MAX_DIMENSION
 
 logger = logging.getLogger(__name__)
+
+# OCR Execution Status Constants
+OCR_STATUS_SUCCESS = "success"
+OCR_STATUS_EMPTY = "empty"
+OCR_STATUS_FAILED = "failed"
+OCR_STATUS_UNAVAILABLE = "unavailable"
+
+# Sentinel stored in database entries when OCR processing times out or fails
+OCR_FAILED_SENTINEL = "__OCR_FAILED__"
 
 
 class OCRProvider(ABC):
@@ -41,9 +50,20 @@ class OCRProvider(ABC):
             image: Input image as a numpy ndarray (RGB/BGR/Grayscale) or PIL Image.
 
         Returns:
-            Extracted text string, or empty string on failure.
+            Extracted text string, '__OCR_FAILED__' on execution failure, or empty string if no text.
         """
         pass
+
+    def extract_text_with_status(self, image: Union[np.ndarray, Image.Image]) -> tuple[str, str]:
+        """Extracts text and returns tuple of (extracted_text, ocr_status)."""
+        text = self.extract_text(image)
+        if not self.is_available():
+            return "", OCR_STATUS_UNAVAILABLE
+        if text == OCR_FAILED_SENTINEL:
+            return "", OCR_STATUS_FAILED
+        if text.strip():
+            return text.strip(), OCR_STATUS_SUCCESS
+        return "", OCR_STATUS_EMPTY
 
 
 def _preprocess_image_for_ocr(
@@ -53,8 +73,8 @@ def _preprocess_image_for_ocr(
     """Converts numpy array or PIL image to an optimized PIL Image for OCR.
 
     Downscales high-resolution images (e.g. 4K screenshots) to bounded dimensions
-    and converts to grayscale ('L' mode) to preserve small text legibility while
-    keeping RAM and CPU overhead low on 2 GB systems.
+    using Lanczos filtering to preserve small text glyph edges, converts to grayscale ('L' mode),
+    and applies autocontrast to optimize text-to-background contrast for Tesseract.
     """
     if image is None:
         return None
@@ -84,7 +104,13 @@ def _preprocess_image_for_ocr(
             ratio = min(max_dimension / w, max_dimension / h)
             new_w = max(1, int(w * ratio))
             new_h = max(1, int(h * ratio))
-            pil_img = pil_img.resize((new_w, new_h), Image.Resampling.BILINEAR)
+            resample_filter = getattr(Image.Resampling, "LANCZOS", Image.Resampling.BILINEAR)
+            pil_img = pil_img.resize((new_w, new_h), resample_filter)
+
+        try:
+            pil_img = ImageOps.autocontrast(pil_img)
+        except Exception:
+            pass
 
         return pil_img
     except Exception as e:
@@ -189,7 +215,7 @@ class TesseractOCRProvider(OCRProvider):
                 logger.warning(f"Tesseract OCR process warning or timeout: {e}")
             else:
                 logger.error(f"Tesseract OCR extraction failed: {e}")
-            return ""
+            return OCR_FAILED_SENTINEL
 
 
 class FallbackOCRProvider(OCRProvider):

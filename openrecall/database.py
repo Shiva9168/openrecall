@@ -165,22 +165,22 @@ def create_db(target_path: Optional[str] = None) -> None:
             cursor.execute(
                 """CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
                        INSERT INTO entries_fts(rowid, text, app, title)
-                       SELECT new.id, new.text, new.app, new.title
+                       SELECT new.id, CASE WHEN new.text = '__OCR_FAILED__' THEN '' ELSE new.text END, new.app, new.title
                        WHERE new.is_deleted = 0;
                    END;"""
             )
             cursor.execute(
                 """CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
                        INSERT INTO entries_fts(entries_fts, rowid, text, app, title)
-                       VALUES('delete', old.id, old.text, old.app, old.title);
+                       VALUES('delete', old.id, CASE WHEN old.text = '__OCR_FAILED__' THEN '' ELSE old.text END, old.app, old.title);
                    END;"""
             )
             cursor.execute(
                 """CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
                        INSERT INTO entries_fts(entries_fts, rowid, text, app, title)
-                       VALUES('delete', old.id, old.text, old.app, old.title);
+                       VALUES('delete', old.id, CASE WHEN old.text = '__OCR_FAILED__' THEN '' ELSE old.text END, old.app, old.title);
                        INSERT INTO entries_fts(rowid, text, app, title)
-                       SELECT new.id, new.text, new.app, new.title
+                       SELECT new.id, CASE WHEN new.text = '__OCR_FAILED__' THEN '' ELSE new.text END, new.app, new.title
                        WHERE new.is_deleted = 0;
                    END;"""
             )
