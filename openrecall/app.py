@@ -1294,82 +1294,128 @@ def serve_static(filename):
     return send_from_directory(screenshots_path, filename)
 
 
+def log_startup_diagnostic(stage: str, extra: str = "", exc: Optional[BaseException] = None):
+    """Temporary diagnostic logger writing startup details to background-startup.log."""
+    try:
+        from openrecall.config import args
+        log_path = os.path.join(appdata_folder, "background-startup.log")
+        now_str = datetime.now(timezone.utc).isoformat()
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{now_str}] STAGE: {stage} | {extra}\n")
+            f.write(f"  sys.executable: {sys.executable}\n")
+            f.write(f"  sys.argv: {sys.argv}\n")
+            f.write(f"  cwd: {os.getcwd()}\n")
+            f.write(f"  background_flag: {getattr(args, 'background', False)}\n")
+            f.write(f"  appdata_folder: {appdata_folder}\n")
+            if exc:
+                import traceback
+                f.write("  EXCEPTIONAL TRACEBACK:\n")
+                f.write(traceback.format_exc())
+                f.write("\n")
+    except Exception:
+        pass
+
+
 def main():
-    from openrecall.config import args
+    from openrecall.config import args, ensure_valid_standard_streams
     from openrecall.platform import get_platform_provider
+
+    ensure_valid_standard_streams()
+    log_startup_diagnostic("MAIN_ENTER", "Entering openrecall.app:main()")
 
     if sys.platform == "win32" and getattr(args, "background", False):
         try:
             import ctypes
             ctypes.windll.kernel32.FreeConsole()
-        except Exception:
-            pass
+            log_startup_diagnostic("FREE_CONSOLE", "FreeConsole executed on Windows")
+        except Exception as e:
+            log_startup_diagnostic("FREE_CONSOLE_WARN", exc=e)
 
-    create_db()
+    try:
+        create_db()
 
-    # 1. Single-instance lock and duplicate startup check
-    lock_file = os.path.join(appdata_folder, "openrecall.lock")
-    instance_lock = SingleInstanceLock(lock_file)
+        # 1. Single-instance lock and duplicate startup check
+        lock_file = os.path.join(appdata_folder, "openrecall.lock")
+        instance_lock = SingleInstanceLock(lock_file)
 
-    if not instance_lock.acquire() or check_existing_instance_running(port=8082):
+        if not instance_lock.acquire() or check_existing_instance_running(port=8082):
+            if getattr(args, "enable_autostart", False):
+                if get_platform_provider().enable_startup():
+                    print("Successfully enabled system autostart.")
+                else:
+                    print("Failed to enable system autostart.")
+            elif getattr(args, "disable_autostart", False):
+                if get_platform_provider().disable_startup():
+                    print("Successfully disabled system autostart.")
+                else:
+                    print("Failed to disable system autostart.")
+            else:
+                print("OpenRecall is already running in the background (http://127.0.0.1:8082).")
+            log_startup_diagnostic("DUPLICATE_EXIT", "Existing process detected; exiting")
+            sys.exit(0)
+
+        log_startup_diagnostic("LOCK_ACQUIRED", f"Acquired single-instance lock: {lock_file}")
+
+        print(f"Appdata folder: {appdata_folder}")
+
         if getattr(args, "enable_autostart", False):
             if get_platform_provider().enable_startup():
                 print("Successfully enabled system autostart.")
             else:
                 print("Failed to enable system autostart.")
-        elif getattr(args, "disable_autostart", False):
+
+        if getattr(args, "disable_autostart", False):
             if get_platform_provider().disable_startup():
                 print("Successfully disabled system autostart.")
             else:
                 print("Failed to disable system autostart.")
-        else:
-            print("OpenRecall is already running in the background (http://127.0.0.1:8082).")
-        sys.exit(0)
 
-    print(f"Appdata folder: {appdata_folder}")
+        # 2. Run startup storage maintenance & orphan reconciliation
+        print("Running startup storage reconciliation...")
+        log_startup_diagnostic("RECONCILIATION_START")
+        reconcile_storage_and_database()
 
-    if getattr(args, "enable_autostart", False):
-        if get_platform_provider().enable_startup():
-            print("Successfully enabled system autostart.")
-        else:
-            print("Failed to enable system autostart.")
+        # 3. Start CapturePipeline
+        log_startup_diagnostic("PIPELINE_START")
+        pipeline = get_capture_pipeline()
+        pipeline.start()
 
-    if getattr(args, "disable_autostart", False):
-        if get_platform_provider().disable_startup():
-            print("Successfully disabled system autostart.")
-        else:
-            print("Failed to disable system autostart.")
+        # 4. Start MaintenanceWorker
+        log_startup_diagnostic("MAINTENANCE_START")
+        maintenance_worker = MaintenanceWorker(storage_lock=pipeline.storage_lock)
+        maintenance_worker.start()
 
-    # 2. Run startup storage maintenance & orphan reconciliation
-    print("Running startup storage reconciliation...")
-    reconcile_storage_and_database()
+        # 5. Graceful OS signal handling (SIGINT, SIGTERM)
+        def signal_handler(sig, frame):
+            print("\nShutdown signal received. Stopping background threads gracefully...")
+            log_startup_diagnostic("SHUTDOWN_SIGNAL", f"Signal {sig} received")
+            pipeline.stop(timeout=2.0)
+            maintenance_worker.stop(timeout=2.0)
+            instance_lock.release()
+            sys.exit(0)
 
-    # 3. Start CapturePipeline
-    pipeline = get_capture_pipeline()
-    pipeline.start()
+        try:
+            signal.signal(signal.SIGINT, signal_handler)
+            signal.signal(signal.SIGTERM, signal_handler)
+        except (ValueError, AttributeError):
+            pass
 
-    # 4. Start MaintenanceWorker
-    maintenance_worker = MaintenanceWorker(storage_lock=pipeline.storage_lock)
-    maintenance_worker.start()
-
-    # 5. Graceful OS signal handling (SIGINT, SIGTERM)
-    def signal_handler(sig, frame):
-        print("\nShutdown signal received. Stopping background threads gracefully...")
-        pipeline.stop(timeout=2.0)
-        maintenance_worker.stop(timeout=2.0)
-        instance_lock.release()
-        sys.exit(0)
-
-    try:
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-    except (ValueError, AttributeError):
-        pass
-
-    try:
+        log_startup_diagnostic("FLASK_STARTING", "Running Flask web server on port 8082")
         app.run(port=8082)
+    except BaseException as exc:
+        log_startup_diagnostic("MAIN_CRASH", exc=exc)
+        if 'instance_lock' in locals():
+            try:
+                instance_lock.release()
+            except Exception:
+                pass
+        raise
     finally:
-        instance_lock.release()
+        if 'instance_lock' in locals():
+            try:
+                instance_lock.release()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

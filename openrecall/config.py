@@ -3,6 +3,51 @@ import os
 import sys
 from typing import Optional
 
+
+class SafeStreamWrapper:
+    """Safe stream wrapper that catches write/flush errors on GUI/background processes."""
+
+    def __init__(self, target_stream=None):
+        self.target_stream = target_stream
+
+    def write(self, text):
+        if self.target_stream is not None:
+            try:
+                return self.target_stream.write(text)
+            except Exception:
+                pass
+
+    def flush(self):
+        if self.target_stream is not None:
+            try:
+                return self.target_stream.flush()
+            except Exception:
+                pass
+
+    def isatty(self):
+        if self.target_stream is not None:
+            try:
+                return self.target_stream.isatty()
+            except Exception:
+                pass
+        return False
+
+
+def ensure_valid_standard_streams():
+    """Guarantees sys.stdout and sys.stderr are safe, non-crashing stream objects."""
+    if getattr(sys, "stdout", None) is None or not hasattr(sys.stdout, "write"):
+        sys.stdout = SafeStreamWrapper(None)
+    else:
+        sys.stdout = SafeStreamWrapper(sys.stdout)
+
+    if getattr(sys, "stderr", None) is None or not hasattr(sys.stderr, "write"):
+        sys.stderr = SafeStreamWrapper(None)
+    else:
+        sys.stderr = SafeStreamWrapper(sys.stderr)
+
+
+ensure_valid_standard_streams()
+
 # Centralized capture pipeline constants
 DOWNSAMPLE_SIZE = (128, 128)
 FRAME_CHANGE_THRESHOLD = 0.001  # 0.1% Mean Absolute Difference threshold
