@@ -87,6 +87,40 @@ def _preprocess_image_for_ocr(
 
 
 
+def _patch_pytesseract_windows_subprocess():
+    """Patches pytesseract subprocess_args on Windows to include CREATE_NO_WINDOW flag.
+
+    Suppresses tesseract.exe console window flashes when running in background mode
+    or under pythonw.exe/gui_scripts on Windows.
+    """
+    import sys
+    if sys.platform != "win32":
+        return
+
+    try:
+        import pytesseract.pytesseract as pt
+    except ImportError:
+        return
+
+    if getattr(pt, "_openrecall_patched", False):
+        return
+
+    orig_subprocess_args = pt.subprocess_args
+
+    def safe_subprocess_args(include_stdout=True):
+        kwargs = orig_subprocess_args(include_stdout=include_stdout)
+        import subprocess
+        create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | create_no_window
+        return kwargs
+
+    pt.subprocess_args = safe_subprocess_args
+    pt._openrecall_patched = True
+
+
+_patch_pytesseract_windows_subprocess()
+
+
 class TesseractOCRProvider(OCRProvider):
     """Local Tesseract OCR provider using pytesseract binding."""
 
@@ -112,6 +146,7 @@ class TesseractOCRProvider(OCRProvider):
         try:
             import pytesseract
 
+            _patch_pytesseract_windows_subprocess()
             pytesseract.get_tesseract_version()
             self._checked_availability = True
             logger.info(f"Tesseract OCR engine initialized successfully (path: {tesseract_bin}).")
@@ -132,6 +167,7 @@ class TesseractOCRProvider(OCRProvider):
         try:
             import pytesseract
 
+            _patch_pytesseract_windows_subprocess()
             text = pytesseract.image_to_string(
                 pil_img,
                 lang=self._lang,

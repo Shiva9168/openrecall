@@ -98,6 +98,25 @@ class TestOCRProviders:
             provider = get_ocr_provider()
             assert provider.name == "fallback"
 
+    def test_windows_tesseract_subprocess_creationflags_patch(self):
+        """Verifies that pytesseract subprocess_args on Windows includes CREATE_NO_WINDOW flag."""
+        from openrecall.ocr import _patch_pytesseract_windows_subprocess
+
+        mock_pt = MagicMock()
+        mock_pt.subprocess_args.return_value = {
+            "stdin": -1,
+            "stderr": -1,
+            "startupinfo": None,
+            "env": {},
+        }
+        mock_pt._openrecall_patched = False
+
+        with patch("sys.platform", "win32"), patch.dict("sys.modules", {"pytesseract.pytesseract": mock_pt}):
+            _patch_pytesseract_windows_subprocess()
+            res = mock_pt.subprocess_args()
+            assert "creationflags" in res
+            assert res["creationflags"] & 0x08000000 == 0x08000000
+
 
 class TestOCRImagePreprocessing:
     """Test suite for OCR image preprocessing and bounded downscaling."""
