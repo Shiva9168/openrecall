@@ -177,26 +177,11 @@ class TesseractOCRProvider(OCRProvider):
 
             _patch_pytesseract_windows_subprocess()
 
-            # Fast pass: try sparse text extraction (--psm 11) for GUI desktop screenshots
-            text = ""
-            try:
-                text = pytesseract.image_to_string(
-                    pil_img,
-                    lang=self._lang,
-                    timeout=self._timeout,
-                    config="--psm 11",
-                )
-            except Exception:
-                text = ""
-
-            # Fallback pass: default PSM mode if sparse text mode returned no text
-            if not text or not text.strip():
-                text = pytesseract.image_to_string(
-                    pil_img,
-                    lang=self._lang,
-                    timeout=self._timeout,
-                )
-
+            text = pytesseract.image_to_string(
+                pil_img,
+                lang=self._lang,
+                timeout=self._timeout,
+            )
             return text.strip()
         except Exception as e:
             err_name = type(e).__name__

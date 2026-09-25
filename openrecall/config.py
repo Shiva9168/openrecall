@@ -56,7 +56,7 @@ CAPTURE_INTERVAL_SECONDS = 10.0
 
 # Centralized local OCR pipeline constants
 OCR_ENGINE = "auto"
-OCR_MAX_DIMENSION = 1920        # Bounded max image dimension for OCR to limit CPU/RAM
+OCR_MAX_DIMENSION = 1280        # Bounded max image dimension for OCR to ensure 2-3s execution and prevent timeouts
 OCR_LANG = "eng"
 
 # Centralized storage capacity configuration defaults
