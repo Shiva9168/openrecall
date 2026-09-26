@@ -1755,4 +1755,183 @@ def reconcile_storage_and_database(
     return summary
 
 
+def audit_legacy_storage(target_path: Optional[str] = None) -> dict:
+    """Performs a strictly read-only audit of legacy database and screenshot storage.
+
+    Args:
+        target_path: Optional path to storage directory or database file.
+
+    Returns:
+        Structured dictionary containing database metadata, preservation status,
+        screenshot matching statistics, orphan analysis, and migration readiness.
+    """
+    src_db = resolve_database_path(target_path)
+    pres_db = get_preservation_path(src_db)
+    s_dir = resolve_screenshots_path(target_path)
+    storage_root = (
+        target_path
+        if (target_path and os.path.isdir(target_path))
+        else os.path.dirname(os.path.abspath(src_db))
+    )
+
+    db_exists = os.path.exists(src_db) and os.path.getsize(src_db) > 0
+    db_bytes = os.path.getsize(src_db) if db_exists else 0
+    db_sha256 = _calculate_file_hash(src_db) if db_exists else None
+    db_state = detect_database_state(src_db) if db_exists else DatabaseState.UNKNOWN
+
+    pres_exists = os.path.exists(pres_db) and os.path.getsize(pres_db) > 0
+    pres_bytes = os.path.getsize(pres_db) if pres_exists else 0
+    pres_sha256 = _calculate_file_hash(pres_db) if pres_exists else None
+
+    if pres_exists and db_exists:
+        pres_status = "matched" if pres_sha256 == db_sha256 else "mismatched"
+    elif pres_exists:
+        pres_status = "present"
+    else:
+        pres_status = "not_present"
+
+    db_timestamps = []
+    total_records = 0
+    if db_exists:
+        try:
+            with get_db_connection(src_db) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT timestamp FROM entries")
+                rows = cursor.fetchall()
+                db_timestamps = [r["timestamp"] for r in rows if r["timestamp"] is not None]
+                total_records = len(db_timestamps)
+        except Exception as e:
+            logger.warning(f"Audit unable to query database timestamps: {e}")
+
+    s_dir_exists = os.path.exists(s_dir) and os.path.isdir(s_dir)
+    physical_files = []
+    webp_files_set = set()
+    anomalies_count = 0
+
+    if s_dir_exists:
+        try:
+            for entry in os.scandir(s_dir):
+                if entry.is_file(follow_symlinks=False):
+                    name = entry.name
+                    physical_files.append(name)
+                    if name.endswith(".webp"):
+                        webp_files_set.add(name)
+                    else:
+                        anomalies_count += 1
+        except Exception as e:
+            logger.warning(f"Audit unable to scan screenshots directory: {e}")
+
+    matched_underscore_zero = 0
+    matched_plain_webp = 0
+    matched_both_variants = 0
+    total_matched_records = 0
+    missing_screenshots = 0
+
+    recognized_filenames = set()
+    for ts in db_timestamps:
+        fn_zero = f"{ts}_0.webp"
+        fn_plain = f"{ts}.webp"
+        recognized_filenames.add(fn_zero)
+        recognized_filenames.add(fn_plain)
+
+        has_zero = fn_zero in webp_files_set
+        has_plain = fn_plain in webp_files_set
+
+        if has_zero and has_plain:
+            matched_both_variants += 1
+
+        if has_zero:
+            matched_underscore_zero += 1
+
+        if has_plain:
+            matched_plain_webp += 1
+
+        if has_zero or has_plain:
+            total_matched_records += 1
+        else:
+            missing_screenshots += 1
+
+    orphan_screenshots = len(webp_files_set - recognized_filenames)
+
+    db_state_str = db_state.value if isinstance(db_state, DatabaseState) else str(db_state)
+    if not db_exists:
+        readiness = "Missing Database"
+    elif db_state == DatabaseState.LEGACY:
+        readiness = "100% Ready for zero-mutation migration"
+    elif db_state == DatabaseState.CURRENT:
+        readiness = "Database already migrated to current schema"
+    else:
+        readiness = "Unsupported or unknown database schema"
+
+    return {
+        "storage_root": storage_root,
+        "database_path": src_db,
+        "database_exists": db_exists,
+        "database_bytes": db_bytes,
+        "database_sha256": db_sha256,
+        "database_state": db_state_str,
+        "preservation_path": pres_db,
+        "preservation_exists": pres_exists,
+        "preservation_bytes": pres_bytes,
+        "preservation_sha256": pres_sha256,
+        "preservation_status": pres_status,
+        "total_records": total_records,
+        "screenshots_dir": s_dir,
+        "screenshots_dir_exists": s_dir_exists,
+        "total_physical_files": len(physical_files),
+        "total_webp_files": len(webp_files_set),
+        "matched_underscore_zero": matched_underscore_zero,
+        "matched_plain_webp": matched_plain_webp,
+        "matched_both_variants": matched_both_variants,
+        "total_matched_records": total_matched_records,
+        "missing_screenshots": missing_screenshots,
+        "orphan_screenshots": orphan_screenshots,
+        "anomalies_count": anomalies_count,
+        "readiness": readiness,
+    }
+
+
+def format_audit_report(report: dict) -> str:
+    """Formats an audit report dictionary into a clean terminal report string."""
+    lines = [
+        "=" * 80,
+        "OPENRECALL LEGACY STORAGE AUDIT REPORT",
+        "=" * 80,
+        f"Storage Root:        {report.get('storage_root', 'N/A')}",
+        "",
+        "--- DATABASE STATUS ---",
+        f"Database Path:       {report.get('database_path', 'N/A')}",
+        f"Database Exists:     {report.get('database_exists', False)}",
+        f"Database State:      {report.get('database_state', 'N/A')}",
+        f"Database Size:       {report.get('database_bytes', 0):,} bytes",
+        f"SHA-256 Hash:        {report.get('database_sha256') or 'N/A'}",
+        f"Total DB Records:    {report.get('total_records', 0):,}",
+        "",
+        "--- PRESERVATION STATUS ---",
+        f"Preservation Path:   {report.get('preservation_path', 'N/A')}",
+        f"Preservation Exists: {report.get('preservation_exists', False)}",
+        f"Preservation Status: {report.get('preservation_status', 'N/A')}",
+        f"Preservation Size:   {report.get('preservation_bytes', 0):,} bytes",
+        f"SHA-256 Hash:        {report.get('preservation_sha256') or 'N/A'}",
+        "",
+        "--- SCREENSHOT STORAGE STATUS ---",
+        f"Screenshots Dir:     {report.get('screenshots_dir', 'N/A')}",
+        f"Directory Exists:    {report.get('screenshots_dir_exists', False)}",
+        f"Total Physical Files:{report.get('total_physical_files', 0):,}",
+        f"Total WebP Files:    {report.get('total_webp_files', 0):,}",
+        f"Matched DB Records:  {report.get('total_matched_records', 0):,} / {report.get('total_records', 0):,}",
+        f"  - {{timestamp}}_0.webp matches: {report.get('matched_underscore_zero', 0):,}",
+        f"  - {{timestamp}}.webp matches:   {report.get('matched_plain_webp', 0):,}",
+        f"  - Both variants present:      {report.get('matched_both_variants', 0):,}",
+        f"Missing Screenshots: {report.get('missing_screenshots', 0):,}",
+        f"Orphan WebP Files:   {report.get('orphan_screenshots', 0):,}",
+        f"Non-WebP Anomalies:  {report.get('anomalies_count', 0):,}",
+        "",
+        "--- READINESS ASSESSMENT ---",
+        f"Migration Readiness: {report.get('readiness', 'N/A')}",
+        "=" * 80,
+    ]
+    return "\n".join(lines)
+
+
 

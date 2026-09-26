@@ -1458,6 +1458,18 @@ def main():
         stop_running_instance()
         sys.exit(0)
 
+    if getattr(args, "audit_legacy_storage", False):
+        from openrecall.database import audit_legacy_storage, format_audit_report
+        try:
+            report = audit_legacy_storage(target_storage_path)
+            report_str = format_audit_report(report)
+            print(report_str)
+            sys.exit(0)
+        except Exception as e:
+            print(f"Legacy storage audit failed: {e}", file=sys.stderr)
+            logger.error(f"Legacy storage audit failed: {e}")
+            sys.exit(1)
+
     if getattr(args, "migrate", False):
         from openrecall.database import migrate_legacy_database
         try:

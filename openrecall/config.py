@@ -102,6 +102,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--audit-legacy-storage",
+    action="store_true",
+    default=False,
+    help="Perform a read-only audit of legacy database and screenshot storage",
+)
+
+parser.add_argument(
     "--primary-monitor-only",
     action="store_true",
     help="Only record the primary monitor",
