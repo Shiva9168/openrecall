@@ -95,6 +95,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--migrate",
+    action="store_true",
+    default=False,
+    help="Migrate a legacy OpenRecall database to the current schema",
+)
+
+parser.add_argument(
     "--primary-monitor-only",
     action="store_true",
     help="Only record the primary monitor",

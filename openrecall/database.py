@@ -286,6 +286,127 @@ def preserve_legacy_database(target_path: Optional[str] = None) -> str:
     return dst_path
 
 
+def migrate_legacy_database(target_path: Optional[str] = None) -> str:
+    """Migrates a recognized legacy OpenRecall database (v0/v1) to the current schema (v3).
+
+    1. Validates database state is DatabaseState.LEGACY.
+    2. Creates a verified preservation copy (recall-legacy.db) BEFORE any schema modification.
+    3. Transforms legacy schema and data within a single transactional block.
+    4. Sets PRAGMA user_version = 3.
+    """
+    path = resolve_database_path(target_path)
+    state = detect_database_state(path)
+
+    if state == DatabaseState.CURRENT:
+        logger.info(f"Database at {path} is already current (v3); no migration required.")
+        return path
+    elif state == DatabaseState.UNKNOWN:
+        raise UnsupportedDatabaseSchemaError(
+            f"Database at {path} has an unknown or unsupported schema and cannot be migrated."
+        )
+    elif state != DatabaseState.LEGACY:
+        raise DatabaseError(f"Database at {path} cannot be migrated: state is {state.value}")
+
+    # 1. Preserve legacy database BEFORE attempting any schema modification
+    preserve_legacy_database(path)
+
+    # 2. Begin transactional schema upgrade and data backfill
+    conn = get_db_connection(path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE TRANSACTION")
+
+        # Inspect existing columns in entries table
+        cursor.execute("PRAGMA table_info(entries)")
+        existing_cols = {col["name"] for col in cursor.fetchall()}
+
+        for col_name, col_type in [
+            ("image_path", "TEXT"),
+            ("thumbnail_path", "TEXT"),
+            ("platform", "TEXT"),
+            ("monitor", "INTEGER DEFAULT 1"),
+            ("is_deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            if col_name not in existing_cols:
+                cursor.execute(f"ALTER TABLE entries ADD COLUMN {col_name} {col_type}")
+
+        # Backfill platform for Windows executable app entries
+        cursor.execute(
+            "UPDATE entries SET platform = 'win32' WHERE platform IS NULL AND lower(app) LIKE '%.exe'"
+        )
+
+        # Ensure structured indexes exist
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON entries (timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_app ON entries (app)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_title ON entries (title)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_active_timestamp ON entries (is_deleted, timestamp)")
+
+        # Create FTS5 virtual table definition and triggers (rebuild deferred to Phase 16.4)
+        cursor.execute(
+            """CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
+                   text,
+                   app,
+                   title,
+                   content='entries',
+                   content_rowid='id',
+                   tokenize='unicode61'
+               )"""
+        )
+
+        cursor.execute("DROP TRIGGER IF EXISTS entries_ai;")
+        cursor.execute("DROP TRIGGER IF EXISTS entries_ad;")
+        cursor.execute("DROP TRIGGER IF EXISTS entries_au;")
+
+        cursor.execute(
+            """CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+                   INSERT INTO entries_fts(rowid, text, app, title)
+                   SELECT new.id, CASE WHEN new.text = '__OCR_FAILED__' THEN '' ELSE new.text END, new.app, new.title
+                   WHERE new.is_deleted = 0;
+               END;"""
+        )
+        cursor.execute(
+            """CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
+                   INSERT INTO entries_fts(entries_fts, rowid, text, app, title)
+                   VALUES('delete', old.id, CASE WHEN old.text = '__OCR_FAILED__' THEN '' ELSE old.text END, old.app, old.title);
+               END;"""
+        )
+        cursor.execute(
+            """CREATE TRIGGER entries_au AFTER UPDATE ON entries BEGIN
+                   INSERT INTO entries_fts(entries_fts, rowid, text, app, title)
+                   VALUES('delete', old.id, CASE WHEN old.text = '__OCR_FAILED__' THEN '' ELSE old.text END, old.app, old.title);
+                   INSERT INTO entries_fts(rowid, text, app, title)
+                   SELECT new.id, CASE WHEN new.text = '__OCR_FAILED__' THEN '' ELSE new.text END, new.app, new.title
+                   WHERE new.is_deleted = 0;
+               END;"""
+        )
+
+        # Update PRAGMA user_version to 3
+        cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+        conn.commit()
+
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.error(f"Migration failed for database at {path}: {e}")
+        raise DatabaseError(f"Migration failed for database at {path}: {e}") from e
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    # Verify post-migration state is CURRENT
+    post_state = detect_database_state(path)
+    if post_state != DatabaseState.CURRENT:
+        raise DatabaseError(f"Migration failed: resulting database state is {post_state.value}, expected CURRENT")
+
+    logger.info(f"Successfully migrated legacy database at {path} to Schema Version {SCHEMA_VERSION}")
+    return path
+
+
 def create_db(target_path: Optional[str] = None) -> None:
     """Creates or verifies the SQLite database for Schema Version 3."""
     path = resolve_database_path(target_path)
@@ -299,7 +420,6 @@ def create_db(target_path: Optional[str] = None) -> None:
         raise UnsupportedDatabaseSchemaError(
             f"Database at {path} has an unknown or unsupported schema version/structure."
         )
-        backup_database(path)
 
     try:
         with get_db_connection(path) as conn:

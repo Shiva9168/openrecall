@@ -1458,6 +1458,18 @@ def main():
         stop_running_instance()
         sys.exit(0)
 
+    if getattr(args, "migrate", False):
+        from openrecall.database import migrate_legacy_database
+        try:
+            migrated_path = migrate_legacy_database(target_storage_path)
+            print(f"Successfully migrated legacy database at {migrated_path} to current schema.")
+            logger.info(f"Successfully migrated legacy database at {migrated_path} to current schema.")
+            sys.exit(0)
+        except Exception as e:
+            print(f"Database migration failed: {e}", file=sys.stderr)
+            logger.error(f"Database migration failed: {e}")
+            sys.exit(1)
+
     mode_str = "background" if getattr(args, "background", False) else "foreground"
     logger.info(f"Starting OpenRecall (platform: {sys.platform}, mode: {mode_str})")
 
