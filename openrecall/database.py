@@ -379,7 +379,7 @@ def migrate_legacy_database(target_path: Optional[str] = None) -> str:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_title ON entries (title)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_active_timestamp ON entries (is_deleted, timestamp)")
 
-        # Create FTS5 virtual table definition and triggers (rebuild deferred to Phase 16.4)
+        # Create FTS5 virtual table definition and triggers
         cursor.execute(
             """CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
                    text,
@@ -418,6 +418,9 @@ def migrate_legacy_database(target_path: Optional[str] = None) -> str:
                END;"""
         )
 
+        # Rebuild FTS5 index for all entries
+        cursor.execute("INSERT INTO entries_fts(entries_fts) VALUES('rebuild')")
+
         # Update PRAGMA user_version to 3
         cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -436,13 +439,168 @@ def migrate_legacy_database(target_path: Optional[str] = None) -> str:
         except Exception:
             pass
 
-    # Verify post-migration state is CURRENT
-    post_state = detect_database_state(path)
-    if post_state != DatabaseState.CURRENT:
-        raise DatabaseError(f"Migration failed: resulting database state is {post_state.value}, expected CURRENT")
+    # Verify and validate post-migration state, data integrity, and FTS search functionality
+    validate_migrated_database(path)
 
     logger.info(f"Successfully migrated legacy database at {path} to Schema Version {SCHEMA_VERSION}")
     return path
+
+
+def validate_migrated_database(target_path: Optional[str] = None) -> bool:
+    """Validates that a migrated database satisfies schema contract, FTS index completeness,
+    data integrity against the preservation copy, and search functionality.
+
+    Raises DatabaseError on validation failure. Returns True on success.
+    """
+    path = resolve_database_path(target_path)
+
+    # 1. Verify schema state and version
+    state = detect_database_state(path)
+    if state != DatabaseState.CURRENT:
+        raise DatabaseError(f"Validation failure: database at {path} state is {state.value}, expected CURRENT")
+
+    version = get_schema_version(path)
+    if version != SCHEMA_VERSION:
+        raise DatabaseError(f"Validation failure: PRAGMA user_version is {version}, expected {SCHEMA_VERSION}")
+
+    # 2. Verify schema structures (columns, indexes, FTS table, triggers)
+    with get_db_connection(path) as conn:
+        cursor = conn.cursor()
+
+        # Check required columns
+        cursor.execute("PRAGMA table_info(entries)")
+        col_names = {c["name"] for c in cursor.fetchall()}
+        required_cols = {
+            "id",
+            "app",
+            "title",
+            "text",
+            "timestamp",
+            "embedding",
+            "image_path",
+            "thumbnail_path",
+            "platform",
+            "monitor",
+            "is_deleted",
+        }
+        if not required_cols.issubset(col_names):
+            missing = required_cols - col_names
+            raise DatabaseError(f"Validation failure: entries table missing required columns: {missing}")
+
+        # Check required indexes
+        cursor.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+        idx_names = {r["name"] for r in cursor.fetchall()}
+        for req_idx in ["idx_timestamp", "idx_app", "idx_title", "idx_active_timestamp"]:
+            if req_idx not in idx_names:
+                raise DatabaseError(f"Validation failure: database missing index {req_idx}")
+
+        # Check FTS table and triggers
+        cursor.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual') AND name = 'entries_fts'")
+        if not cursor.fetchone():
+            raise DatabaseError("Validation failure: entries_fts virtual table missing")
+
+        cursor.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+        trig_names = {r["name"] for r in cursor.fetchall()}
+        for req_trig in ["entries_ai", "entries_ad", "entries_au"]:
+            if req_trig not in trig_names:
+                raise DatabaseError(f"Validation failure: missing FTS trigger {req_trig}")
+
+        # Check active entries count
+        cursor.execute("SELECT COUNT(*) FROM entries WHERE is_deleted = 0")
+        active_entries_count = cursor.fetchone()[0]
+
+        # Check FTS5 index integrity using SQLite FTS5 integrity-check command
+        try:
+            cursor.execute("INSERT INTO entries_fts(entries_fts) VALUES('integrity-check')")
+        except sqlite3.Error as fts_err:
+            raise DatabaseError(f"Validation failure: FTS5 index integrity check failed: {fts_err}") from fts_err
+
+        # Verify FTS5 shadow table entries_fts_docsize has matching row count
+        try:
+            cursor.execute("SELECT COUNT(*) FROM entries_fts_docsize")
+            fts_docsize_count = cursor.fetchone()[0]
+            if fts_docsize_count != active_entries_count:
+                raise DatabaseError(
+                    f"Validation failure: FTS docsize count ({fts_docsize_count}) does not match entries count ({active_entries_count})"
+                )
+        except sqlite3.Error as shadow_err:
+            raise DatabaseError(f"Validation failure: Could not verify FTS docsize count: {shadow_err}") from shadow_err
+
+    # 3. Data Integrity Validation against preservation copy if available
+    preservation_path = get_preservation_path(path)
+    if os.path.exists(preservation_path) and os.path.getsize(preservation_path) > 0:
+        with get_db_connection(preservation_path) as src_conn, get_db_connection(path) as dst_conn:
+            src_cursor = src_conn.cursor()
+            dst_cursor = dst_conn.cursor()
+
+            src_cursor.execute("SELECT id, app, title, text, timestamp, embedding FROM entries ORDER BY id ASC")
+            src_rows = src_cursor.fetchall()
+
+            dst_cursor.execute("SELECT id, app, title, text, timestamp, embedding FROM entries ORDER BY id ASC")
+            dst_rows = dst_cursor.fetchall()
+
+            if len(src_rows) != len(dst_rows):
+                raise DatabaseError(
+                    f"Validation failure: preservation record count ({len(src_rows)}) does not match migrated count ({len(dst_rows)})"
+                )
+
+            for src_row, dst_row in zip(src_rows, dst_rows):
+                if src_row["id"] != dst_row["id"]:
+                    raise DatabaseError(
+                        f"Validation failure: ID mismatch (legacy {src_row['id']} vs migrated {dst_row['id']})"
+                    )
+                if src_row["timestamp"] != dst_row["timestamp"]:
+                    raise DatabaseError(f"Validation failure: Timestamp mismatch at ID {src_row['id']}")
+                if src_row["app"] != dst_row["app"]:
+                    raise DatabaseError(f"Validation failure: App mismatch at ID {src_row['id']}")
+                if src_row["title"] != dst_row["title"]:
+                    raise DatabaseError(f"Validation failure: Title mismatch at ID {src_row['id']}")
+                if src_row["text"] != dst_row["text"]:
+                    raise DatabaseError(f"Validation failure: Text mismatch at ID {src_row['id']}")
+
+                src_emb = bytes(src_row["embedding"]) if src_row["embedding"] is not None else b""
+                dst_emb = bytes(dst_row["embedding"]) if dst_row["embedding"] is not None else b""
+                if src_emb != dst_emb:
+                    raise DatabaseError(f"Validation failure: Embedding BLOB byte mismatch at ID {src_row['id']}")
+
+    # 4. Image path validation if screenshots directory exists
+    screenshots_dir = resolve_screenshots_path(path)
+    if os.path.exists(screenshots_dir) and os.path.isdir(screenshots_dir):
+        try:
+            existing_files = set(os.listdir(screenshots_dir))
+            with get_db_connection(path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, image_path FROM entries WHERE image_path IS NOT NULL")
+                for row in cursor.fetchall():
+                    img = row["image_path"]
+                    if img and img not in existing_files:
+                        raise DatabaseError(
+                            f"Validation failure: referenced image_path '{img}' not found in screenshots directory"
+                        )
+        except OSError:
+            pass
+
+    # 5. Search Functionality Validation
+    if active_entries_count > 0:
+        sample_entries = get_recent_entries(target_path=path, limit=10)
+        if sample_entries:
+            sample = sample_entries[0]
+            if sample.text and sample.text != "__OCR_FAILED__":
+                words = [w for w in re.findall(r"\w+", sample.text) if len(w) >= 3]
+                if words:
+                    term = words[0]
+                    results = search_entries(term, target_path=path)
+                    if not any(r.id == sample.id for r in results):
+                        raise DatabaseError(
+                            f"Validation failure: FTS search for text term '{term}' did not return record {sample.id}"
+                        )
+
+            no_results = search_entries("nonexistent_random_xyz_term_12345", target_path=path)
+            if len(no_results) != 0:
+                raise DatabaseError("Validation failure: search for non-existent term returned results")
+
+    logger.info(f"Database migration validation succeeded for {path}")
+    return True
 
 
 def create_db(target_path: Optional[str] = None) -> None:
