@@ -286,13 +286,24 @@ def preserve_legacy_database(target_path: Optional[str] = None) -> str:
     return dst_path
 
 
+def resolve_screenshots_path(target_path: Optional[str] = None) -> str:
+    """Resolves the screenshots directory path for a given storage root or database file path."""
+    if not target_path:
+        return screenshots_path
+    if os.path.isdir(target_path):
+        return os.path.join(target_path, "screenshots")
+    dirname = os.path.dirname(os.path.abspath(target_path))
+    return os.path.join(dirname, "screenshots")
+
+
 def migrate_legacy_database(target_path: Optional[str] = None) -> str:
     """Migrates a recognized legacy OpenRecall database (v0/v1) to the current schema (v3).
 
     1. Validates database state is DatabaseState.LEGACY.
     2. Creates a verified preservation copy (recall-legacy.db) BEFORE any schema modification.
     3. Transforms legacy schema and data within a single transactional block.
-    4. Sets PRAGMA user_version = 3.
+    4. Populates image_path referencing existing legacy screenshots in place (zero file mutation).
+    5. Sets PRAGMA user_version = 3.
     """
     path = resolve_database_path(target_path)
     state = detect_database_state(path)
@@ -310,7 +321,16 @@ def migrate_legacy_database(target_path: Optional[str] = None) -> str:
     # 1. Preserve legacy database BEFORE attempting any schema modification
     preserve_legacy_database(path)
 
-    # 2. Begin transactional schema upgrade and data backfill
+    # 2. Inspect screenshot directory (read-only filesystem listing for zero file mutation)
+    screenshots_dir = resolve_screenshots_path(target_path)
+    existing_files = set()
+    if os.path.exists(screenshots_dir) and os.path.isdir(screenshots_dir):
+        try:
+            existing_files = set(os.listdir(screenshots_dir))
+        except OSError as err:
+            logger.warning(f"Could not read screenshots directory at {screenshots_dir}: {err}")
+
+    # 3. Begin transactional schema upgrade and data backfill
     conn = get_db_connection(path)
     try:
         cursor = conn.cursor()
@@ -334,6 +354,24 @@ def migrate_legacy_database(target_path: Optional[str] = None) -> str:
         cursor.execute(
             "UPDATE entries SET platform = 'win32' WHERE platform IS NULL AND lower(app) LIKE '%.exe'"
         )
+
+        # Backfill image_path referencing existing legacy screenshots in place
+        if existing_files:
+            cursor.execute("SELECT id, timestamp FROM entries WHERE image_path IS NULL")
+            rows = cursor.fetchall()
+            updates = []
+            for row in rows:
+                row_id, ts = row["id"], row["timestamp"]
+                if ts is not None:
+                    file_0 = f"{ts}_0.webp"
+                    file_plain = f"{ts}.webp"
+                    if file_0 in existing_files:
+                        updates.append((file_0, row_id))
+                    elif file_plain in existing_files:
+                        updates.append((file_plain, row_id))
+
+            if updates:
+                cursor.executemany("UPDATE entries SET image_path = ? WHERE id = ?", updates)
 
         # Ensure structured indexes exist
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON entries (timestamp)")
