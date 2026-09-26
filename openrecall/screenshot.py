@@ -153,7 +153,7 @@ def write_screenshot_bytes(
         os.replace(temp_path, norm_path)
         return True
     except Exception as e:
-        logger.error(f"Failed to write screenshot bytes to {filepath}: {e}")
+        logger.error(f"Failed to write screenshot bytes to disk: {e}")
         try:
             temp_path = os.path.normpath(filepath) + ".tmp"
             if os.path.exists(temp_path):
@@ -435,13 +435,13 @@ class CapturePipeline:
                 # Pre-encode WebP image bytes lock-free in-memory
                 webp_bytes = encode_screenshot_bytes(shot_array, quality=80)
                 if webp_bytes is None:
-                    logger.warning(f"Skipping database insertion for {filename}: In-memory WebP encoding failed.")
+                    logger.warning("Skipping database insertion: In-memory WebP encoding failed.")
                     continue
 
                 # Critical section: file write + DB insertion protected by storage_lock
                 with self.storage_lock:
                     if not write_screenshot_bytes(webp_bytes, filepath):
-                        logger.warning(f"Skipping database insertion for {filename}: File write failed.")
+                        logger.warning("Skipping database insertion: File write failed.")
                         continue
 
                     try:
@@ -456,7 +456,7 @@ class CapturePipeline:
                         )
                         self.captures_processed += 1
                     except Exception as db_err:
-                        logger.error(f"Database insertion failed for screenshot {filename}: {db_err}")
+                        logger.error(f"Database insertion failed for screenshot: {db_err}")
             except Exception as e:
                 logger.error(f"Error processing frame item in worker loop: {e}")
             finally:

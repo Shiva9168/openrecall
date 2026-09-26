@@ -4,6 +4,7 @@ Provides SQLite FTS5 full-text indexing, metadata filtering, bounded pagination,
 schema versioning, and safe data migration from legacy database schemas.
 """
 
+import logging
 import os
 import re
 import shutil
@@ -15,6 +16,9 @@ from typing import Any, List, Optional
 import numpy as np
 
 from openrecall.config import db_path, screenshots_path
+
+logger = logging.getLogger(__name__)
+
 
 SCHEMA_VERSION = 3
 
@@ -65,7 +69,7 @@ def backup_database(target_path: Optional[str] = None) -> Optional[str]:
             shutil.copy2(path, backup_path)
             return backup_path
         except Exception as copy_err:
-            print(f"Error creating database backup: {copy_err}")
+            logger.error(f"Error creating database backup: {copy_err}")
             return None
 
 
@@ -197,7 +201,7 @@ def create_db(target_path: Optional[str] = None) -> None:
             conn.commit()
 
     except sqlite3.Error as e:
-        print(f"Database creation/migration failed: {e}")
+        logger.error(f"Database creation/migration failed: {e}")
         raise
 
 
@@ -297,7 +301,7 @@ def insert_entry(
             if cursor.rowcount > 0:
                 last_row_id = cursor.lastrowid
     except sqlite3.Error as e:
-        print(f"Database error during insertion: {e}")
+        logger.error(f"Database error during insertion: {e}")
     return last_row_id
 
 
@@ -326,7 +330,7 @@ def get_recent_entries(
             rows = cursor.fetchall()
             entries = [_row_to_entry(r) for r in rows]
     except sqlite3.Error as e:
-        print(f"Database error fetching recent entries: {e}")
+        logger.error(f"Database error fetching recent entries: {e}")
     return entries
 
 
@@ -356,7 +360,7 @@ def get_timestamps(
             rows = cursor.fetchall()
             timestamps = [row["timestamp"] for row in rows]
     except sqlite3.Error as e:
-        print(f"Database error fetching timestamps: {e}")
+        logger.error(f"Database error fetching timestamps: {e}")
     return timestamps
 
 
@@ -374,7 +378,7 @@ def get_available_apps(target_path: Optional[str] = None) -> List[str]:
             rows = cursor.fetchall()
             apps = [row["app"] for row in rows if row["app"]]
     except sqlite3.Error as e:
-        print(f"Database error fetching available apps: {e}")
+        logger.error(f"Database error fetching available apps: {e}")
     return apps
 
 
@@ -394,7 +398,7 @@ def get_entry_by_id(entry_id: int, target_path: Optional[str] = None) -> Optiona
             if row:
                 return _row_to_entry(row)
     except sqlite3.Error as e:
-        print(f"Database error fetching entry by ID {entry_id}: {e}")
+        logger.error(f"Database error fetching entry by ID {entry_id}: {e}")
     return None
 
 
@@ -415,7 +419,7 @@ def get_previous_capture_id(current_timestamp: int, target_path: Optional[str] =
             if row:
                 return row["id"]
     except sqlite3.Error as e:
-        print(f"Database error fetching previous capture ID: {e}")
+        logger.error(f"Database error fetching previous capture ID: {e}")
     return None
 
 
@@ -436,7 +440,7 @@ def get_next_capture_id(current_timestamp: int, target_path: Optional[str] = Non
             if row:
                 return row["id"]
     except sqlite3.Error as e:
-        print(f"Database error fetching next capture ID: {e}")
+        logger.error(f"Database error fetching next capture ID: {e}")
     return None
 
 
@@ -450,7 +454,7 @@ def get_total_entries_count(target_path: Optional[str] = None) -> int:
             row = cursor.fetchone()
             return row[0] if row else 0
     except sqlite3.Error as e:
-        print(f"Database error fetching total entries count: {e}")
+        logger.error(f"Database error fetching total entries count: {e}")
         return 0
 
 
@@ -490,7 +494,7 @@ def get_timeline_bounds(target_path: Optional[str] = None) -> dict:
                         max_ts = row["max_ts"] if max_ts is None else max(max_ts, row["max_ts"])
                     total_count += row["cnt"]
         except sqlite3.Error as e:
-            print(f"Database error fetching timeline bounds from {p}: {e}")
+            logger.error(f"Database error fetching timeline bounds: {e}")
 
     return {
         "earliest_ts": min_ts,
@@ -517,7 +521,7 @@ def get_timeline_captures_index(target_path: Optional[str] = None) -> List[dict]
                         seen_timestamps.add(ts)
                         all_items.append({"id": r["id"], "timestamp": ts})
         except sqlite3.Error as e:
-            print(f"Database error fetching timeline index from {p}: {e}")
+            logger.error(f"Database error fetching timeline index: {e}")
 
     all_items.sort(key=lambda x: x["timestamp"])
     return all_items
@@ -556,7 +560,7 @@ def get_entry_nearest_timestamp(
                 if row_ge:
                     candidates.append(_row_to_entry(row_ge))
         except sqlite3.Error as e:
-            print(f"Database error fetching nearest timestamp entry from {p}: {e}")
+            logger.error(f"Database error fetching nearest timestamp entry: {e}")
 
     if not candidates:
         return None
@@ -659,7 +663,7 @@ def search_entries(
             rows = cursor.fetchall()
             entries = [_row_to_entry(r) for r in rows]
     except sqlite3.Error as e:
-        print(f"Database error during search: {e}")
+        logger.error(f"Database error during search: {e}")
     return entries
 
 
@@ -708,7 +712,7 @@ def get_timeline_entries(
             rows = cursor.fetchall()
             entries = [_row_to_entry(r) for r in rows]
     except sqlite3.Error as e:
-        print(f"Database error during timeline fetch: {e}")
+        logger.error(f"Database error during timeline fetch: {e}")
     return entries
 
 
@@ -757,7 +761,7 @@ def _safe_remove_image_file(
         for allowed_dir in allowed_dirs
     )
     if not is_contained:
-        print(f"Security Warning: Rejected removal of path outside storage root: {norm_path}")
+        logger.warning("Security Warning: Rejected removal of path outside storage root.")
         return False
 
     if not os.path.exists(norm_path):
@@ -767,7 +771,7 @@ def _safe_remove_image_file(
         os.remove(norm_path)
         return True
     except Exception as e:
-        print(f"Warning: Filesystem removal failed for {norm_path}: {e}")
+        logger.warning(f"Warning: Filesystem removal failed: {e}")
         return False
 
 
@@ -818,7 +822,7 @@ def delete_entry_by_id(
             if cursor.rowcount > 0:
                 row_updated = True
     except sqlite3.Error as e:
-        print(f"Database error soft-deleting entry ID {entry_id}: {e}")
+        logger.error(f"Database error soft-deleting entry ID {entry_id}: {e}")
         raise
 
     if not row_updated:
@@ -889,7 +893,7 @@ def delete_entries_older_than(
                 )
                 batch_items = cursor.fetchall()
         except sqlite3.Error as e:
-            print(f"Database error selecting retention batch: {e}")
+            logger.error(f"Database error selecting retention batch: {e}")
             break
 
         if not batch_items:
@@ -911,7 +915,7 @@ def delete_entries_older_than(
                 conn.commit()
                 rows_affected = cursor.rowcount
         except sqlite3.Error as e:
-            print(f"Database error deleting retention batch: {e}")
+            logger.error(f"Database error deleting retention batch: {e}")
             break
 
         if rows_affected <= 0:
@@ -964,9 +968,9 @@ def get_referenced_storage_bytes(
                     if os.path.exists(norm_path):
                         total_bytes += os.path.getsize(norm_path)
                 except (OSError, PermissionError) as os_err:
-                    print(f"Warning: Stat error for referenced screenshot {norm_path}: {os_err}")
+                    logger.warning(f"Warning: Stat error for referenced screenshot: {os_err}")
     except sqlite3.Error as e:
-        print(f"Database error fetching referenced image paths: {e}")
+        logger.error(f"Database error fetching referenced image paths: {e}")
         raise
 
     return total_bytes
@@ -1042,7 +1046,7 @@ def trim_referenced_storage_to_capacity(
                 )
                 candidates = cursor.fetchall()
         except sqlite3.Error as e:
-            print(f"Database error selecting capacity deletion candidates: {e}")
+            logger.error(f"Database error selecting capacity deletion candidates: {e}")
             break
 
         if not candidates:
@@ -1085,7 +1089,7 @@ def trim_referenced_storage_to_capacity(
                 conn.commit()
                 rows_affected = cursor.rowcount
         except sqlite3.Error as e:
-            print(f"Database error deleting capacity batch: {e}")
+            logger.error(f"Database error deleting capacity batch: {e}")
             break
 
         if rows_affected <= 0:
@@ -1169,7 +1173,7 @@ def reconcile_storage_and_database(
                     db_relative_paths.add(norm_rel)
                     db_entries_with_image.append((r["id"], norm_rel))
         except sqlite3.Error as db_err:
-            print(f"Database error loading entries for reconciliation: {db_err}")
+            logger.error(f"Database error loading entries for reconciliation: {db_err}")
 
         # 2. Scan physical screenshots directory
         physical_files = set()

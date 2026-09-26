@@ -1,6 +1,8 @@
 """General utility functions, single-instance process lock, and platform delegate wrappers."""
 
 import datetime
+import logging
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 import urllib.request
@@ -11,6 +13,61 @@ from openrecall.platform import (
     MSSScreenCaptureProvider,
     get_platform_provider,
 )
+
+_logging_configured = False
+
+
+def setup_logging(storage_path: Optional[str] = None) -> logging.Logger:
+    """Configures centralized, privacy-safe rotating file logging to log.txt in storage_path."""
+    global _logging_configured
+    from openrecall.config import appdata_folder
+
+    target_dir = os.path.abspath(storage_path) if storage_path else appdata_folder
+    os.makedirs(target_dir, exist_ok=True)
+    log_file = os.path.normpath(os.path.join(target_dir, "log.txt"))
+
+    logger = logging.getLogger("openrecall")
+    logger.setLevel(logging.INFO)
+
+    # Silence Werkzeug HTTP request logging
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
+
+    # Remove any existing RotatingFileHandler on "openrecall" logger pointing to a different log file
+    has_target_handler = False
+    for handler in list(logger.handlers):
+        if isinstance(handler, RotatingFileHandler):
+            if os.path.abspath(handler.baseFilename) == os.path.abspath(log_file):
+                has_target_handler = True
+            else:
+                logger.removeHandler(handler)
+                handler.close()
+
+    if not has_target_handler:
+        handler = RotatingFileHandler(
+            log_file,
+            maxBytes=5 * 1024 * 1024,  # 5 MB max log file size
+            backupCount=1,             # 1 backup file log.txt.1
+            encoding="utf-8",
+        )
+        formatter = logging.Formatter(
+            "[%(asctime)s] [%(levelname)s] %(name)s: %(message)s"
+        )
+        handler.setFormatter(formatter)
+        handler.setLevel(logging.INFO)
+        logger.addHandler(handler)
+
+    _logging_configured = True
+    return logger
+
+
+def get_logger(name: Optional[str] = None) -> logging.Logger:
+    """Returns a logger instance under openrecall namespace."""
+    if name:
+        if not name.startswith("openrecall"):
+            return logging.getLogger(f"openrecall.{name}")
+        return logging.getLogger(name)
+    return logging.getLogger("openrecall")
+
 
 
 def human_readable_time(timestamp: int) -> str:

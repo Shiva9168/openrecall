@@ -100,6 +100,7 @@ The OpenRecall Web UI at `http://localhost:8082` includes:
 
 ## Troubleshooting
 
+- **Local Log Diagnostics**: OpenRecall writes sparse, privacy-safe lifecycle and operational diagnostics to `<configured-storage-path>/log.txt` (automatically rotated up to 5 MB with 1 backup file `log.txt.1`).
 - **Tesseract OCR not detected**: Install Tesseract using your system package manager (`sudo apt install tesseract-ocr` on Ubuntu/Debian, `brew install tesseract` on macOS, or the installer on Windows). OpenRecall will automatically detect Tesseract on your `PATH`.
 - **Port 8082 already in use**: Ensure another instance of OpenRecall is not already running.
 - **Wayland Window Titles showing 'Untitled Window'**: Under pure Wayland sessions, Linux security policies prevent external process window title inspection. OpenRecall degrades gracefully and continues capturing visual screenshots.

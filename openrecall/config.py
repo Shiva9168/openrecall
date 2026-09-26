@@ -193,3 +193,10 @@ if not os.path.exists(screenshots_path):
         os.makedirs(screenshots_path, exist_ok=True)
     except Exception:
         pass
+
+try:
+    from openrecall.utils import setup_logging
+    setup_logging(appdata_folder)
+except Exception:
+    pass
+
