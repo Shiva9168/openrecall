@@ -4,6 +4,7 @@ Provides SQLite FTS5 full-text indexing, metadata filtering, bounded pagination,
 schema versioning, and safe data migration from legacy database schemas.
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -11,6 +12,7 @@ import shutil
 import sqlite3
 import time
 from collections import namedtuple
+from enum import Enum
 from typing import Any, List, Optional
 
 import numpy as np
@@ -21,6 +23,38 @@ logger = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = 3
+
+
+class DatabaseState(Enum):
+    CURRENT = "current"
+    LEGACY = "legacy"
+    UNKNOWN = "unknown"
+
+
+class DatabaseError(Exception):
+    """Base exception for database operations."""
+    pass
+
+
+class LegacyDatabaseMigrationRequiredError(DatabaseError):
+    """Raised when an operation encounters a legacy database requiring explicit migration."""
+    pass
+
+
+class UnsupportedDatabaseSchemaError(DatabaseError):
+    """Raised when an operation encounters an unknown or unsupported database schema."""
+    pass
+
+
+class PreservationError(DatabaseError):
+    """Raised when legacy database preservation fails."""
+    pass
+
+
+class PreservationCopyExistsError(PreservationError):
+    """Raised when a preservation copy already exists but differs from the source database."""
+    pass
+
 
 # Structure of a database entry, preserving legacy fields and adding path/platform/deletion metadata
 Entry = namedtuple(
@@ -42,9 +76,27 @@ Entry = namedtuple(
 )
 
 
+def _calculate_file_hash(file_path: str) -> str:
+    """Calculates the SHA-256 hash of a file."""
+    hasher = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def resolve_database_path(target_path: Optional[str] = None) -> str:
+    """Resolves the database file path for a given storage root or explicit database file path."""
+    if not target_path:
+        return db_path
+    if os.path.isdir(target_path):
+        return os.path.join(target_path, "recall.db")
+    return target_path
+
+
 def get_db_connection(target_path: Optional[str] = None) -> sqlite3.Connection:
     """Creates a database connection with Row factory enabled."""
-    path = target_path or db_path
+    path = resolve_database_path(target_path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
@@ -52,7 +104,7 @@ def get_db_connection(target_path: Optional[str] = None) -> sqlite3.Connection:
 
 def backup_database(target_path: Optional[str] = None) -> Optional[str]:
     """Creates an atomic backup copy of the target SQLite database file."""
-    path = target_path or db_path
+    path = resolve_database_path(target_path)
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         return None
 
@@ -75,7 +127,7 @@ def backup_database(target_path: Optional[str] = None) -> Optional[str]:
 
 def get_schema_version(target_path: Optional[str] = None) -> int:
     """Returns the current PRAGMA user_version of the database."""
-    path = target_path or db_path
+    path = resolve_database_path(target_path)
     if not os.path.exists(path):
         return 0
     try:
@@ -88,16 +140,165 @@ def get_schema_version(target_path: Optional[str] = None) -> int:
         return 0
 
 
+def detect_database_state(target_path: Optional[str] = None) -> DatabaseState:
+    """Detects and classifies the database state into CURRENT, LEGACY, or UNKNOWN."""
+    path = resolve_database_path(target_path)
+
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return DatabaseState.CURRENT
+
+    try:
+        with get_db_connection(path) as conn:
+            cursor = conn.cursor()
+
+            # Fetch user_version PRAGMA
+            cursor.execute("PRAGMA user_version")
+            row = cursor.fetchone()
+            version = row[0] if row is not None else 0
+
+            # Inspect tables in sqlite_master
+            cursor.execute("SELECT name, type FROM sqlite_master WHERE type IN ('table', 'virtual')")
+            master_rows = cursor.fetchall()
+            tables = {r["name"]: r["type"] for r in master_rows}
+
+            if "entries" not in tables:
+                return DatabaseState.UNKNOWN
+
+            # Inspect columns of entries table
+            cursor.execute("PRAGMA table_info(entries)")
+            col_rows = cursor.fetchall()
+            col_names = {c["name"] for c in col_rows}
+
+            base_cols = {"id", "app", "title", "text", "timestamp", "embedding"}
+            v2_v3_core_cols = {
+                "id",
+                "app",
+                "title",
+                "text",
+                "timestamp",
+                "embedding",
+                "image_path",
+                "thumbnail_path",
+                "platform",
+                "monitor",
+            }
+            overhaul_cols = {"image_path", "thumbnail_path", "platform", "monitor", "is_deleted"}
+
+            has_fts = "entries_fts" in tables
+            has_any_overhaul_col = bool(col_names.intersection(overhaul_cols))
+
+            # CURRENT criteria:
+            # - version == 2 with core overhaul columns (ready for v2->v3 DDL completion)
+            # - version >= 3 with core overhaul columns AND entries_fts virtual table present
+            if (
+                version == 2
+                and v2_v3_core_cols.issubset(col_names)
+                and col_names.issubset(base_cols | overhaul_cols)
+            ):
+                return DatabaseState.CURRENT
+
+            if (
+                version >= 3
+                and v2_v3_core_cols.issubset(col_names)
+                and col_names.issubset(base_cols | overhaul_cols)
+                and has_fts
+            ):
+                return DatabaseState.CURRENT
+
+            # LEGACY criteria: version < 2, exact base columns, no overhaul columns, no FTS table
+            if (
+                version < 2
+                and col_names == base_cols
+                and not has_any_overhaul_col
+                and not has_fts
+            ):
+                return DatabaseState.LEGACY
+
+            return DatabaseState.UNKNOWN
+
+    except (sqlite3.Error, OSError, Exception):
+        return DatabaseState.UNKNOWN
+
+
+def get_preservation_path(target_path: Optional[str] = None) -> str:
+    """Returns the expected preservation copy file path for a given database path."""
+    path = resolve_database_path(target_path)
+    dirname, filename = os.path.split(os.path.abspath(path))
+    if filename == "recall.db":
+        return os.path.join(dirname, "recall-legacy.db")
+    base, ext = os.path.splitext(filename)
+    return os.path.join(dirname, f"{base}-legacy{ext}")
+
+
+def preserve_legacy_database(target_path: Optional[str] = None) -> str:
+    """Safely creates a verified preservation copy (recall-legacy.db) of a legacy database."""
+    src_path = resolve_database_path(target_path)
+
+    if not os.path.exists(src_path) or os.path.getsize(src_path) == 0:
+        raise PreservationError(f"Source database at {src_path} does not exist or is empty")
+
+    state = detect_database_state(src_path)
+    if state != DatabaseState.LEGACY:
+        raise PreservationError(
+            f"Cannot preserve database at {src_path}: state is {state.value}, expected legacy schema"
+        )
+
+    dst_path = get_preservation_path(src_path)
+    src_hash_before = _calculate_file_hash(src_path)
+
+    if os.path.exists(dst_path) and os.path.getsize(dst_path) > 0:
+        dst_hash = _calculate_file_hash(dst_path)
+        if dst_hash == src_hash_before:
+            logger.info(f"Preservation copy already exists and is identical at {dst_path}")
+            return dst_path
+        else:
+            raise PreservationCopyExistsError(
+                f"Preservation copy at {dst_path} already exists but differs from source database"
+            )
+
+    try:
+        shutil.copy2(src_path, dst_path)
+    except Exception as copy_err:
+        if os.path.exists(dst_path):
+            try:
+                os.remove(dst_path)
+            except Exception:
+                pass
+        raise PreservationError(f"Failed to create preservation copy: {copy_err}") from copy_err
+
+    if not os.path.exists(dst_path) or os.path.getsize(dst_path) == 0:
+        raise PreservationError(f"Preservation copy at {dst_path} was not created or is empty")
+
+    src_hash_after = _calculate_file_hash(src_path)
+    if src_hash_before != src_hash_after:
+        raise PreservationError(f"Source database at {src_path} was modified during preservation copy creation")
+
+    dst_hash = _calculate_file_hash(dst_path)
+    if dst_hash != src_hash_before:
+        if os.path.exists(dst_path):
+            try:
+                os.remove(dst_path)
+            except Exception:
+                pass
+        raise PreservationError(f"Preservation copy SHA-256 ({dst_hash}) does not match source ({src_hash_before})")
+
+    logger.info(f"Successfully preserved legacy database from {src_path} to {dst_path}")
+    return dst_path
+
+
 def create_db(target_path: Optional[str] = None) -> None:
-    """Creates or migrates the SQLite database to the target Schema Version (v2)."""
-    path = target_path or db_path
-    current_version = get_schema_version(path)
+    """Creates or verifies the SQLite database for Schema Version 3."""
+    path = resolve_database_path(target_path)
+    state = detect_database_state(path)
 
-    if current_version == SCHEMA_VERSION:
-        return  # Database is up to date
-
-    # Backup if database exists and contains legacy data
-    if os.path.exists(path) and os.path.getsize(path) > 0 and current_version < SCHEMA_VERSION:
+    if state == DatabaseState.LEGACY:
+        raise LegacyDatabaseMigrationRequiredError(
+            f"Database at {path} is a legacy OpenRecall database (v0) and requires explicit migration."
+        )
+    elif state == DatabaseState.UNKNOWN:
+        raise UnsupportedDatabaseSchemaError(
+            f"Database at {path} has an unknown or unsupported schema version/structure."
+        )
         backup_database(path)
 
     try:

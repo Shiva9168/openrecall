@@ -143,7 +143,8 @@ class TestDatabasePhase1C(unittest.TestCase):
         self.assertEqual(len(p_large), 15)
 
     def test_legacy_schema_v1_migration(self):
-        """Test migrating a populated legacy schema v1 database to v2 with backup creation."""
+        """Test that create_db refuses to automatically migrate a legacy database and raises LegacyDatabaseMigrationRequiredError."""
+        from openrecall.database import LegacyDatabaseMigrationRequiredError, detect_database_state, DatabaseState
         legacy_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
         try:
             # Create a legacy v1 database
@@ -167,24 +168,15 @@ class TestDatabasePhase1C(unittest.TestCase):
                 )
                 conn.commit()
 
-            # Execute create_db/migration on legacy database
-            create_db(legacy_db)
+            # Verify detection classifies it as LEGACY
+            self.assertEqual(detect_database_state(legacy_db), DatabaseState.LEGACY)
 
-            # Check version updated to target SCHEMA_VERSION (v3)
-            self.assertEqual(get_schema_version(legacy_db), SCHEMA_VERSION)
+            # Calling create_db on legacy database must raise LegacyDatabaseMigrationRequiredError
+            with self.assertRaises(LegacyDatabaseMigrationRequiredError):
+                create_db(legacy_db)
 
-            # Check data preserved
-            entries = get_recent_entries(target_path=legacy_db)
-            self.assertEqual(len(entries), 1)
-            self.assertEqual(entries[0].app, "LegacyApp")
-            self.assertEqual(entries[0].text, "Legacy OCR Text")
-            self.assertEqual(entries[0].timestamp, 55555)
-            self.assertIsNotNone(entries[0].embedding)
-            np.testing.assert_array_almost_equal(entries[0].embedding, np.array([0.1, 0.2, 0.3], dtype=np.float32))
-
-            # Verify FTS5 indexed the legacy record
-            fts_results = search_entries("Legacy", target_path=legacy_db)
-            self.assertEqual(len(fts_results), 1)
+            # Schema version remains unchanged (v1) and not silently upgraded
+            self.assertEqual(get_schema_version(legacy_db), 1)
 
         finally:
             if os.path.exists(legacy_db):
