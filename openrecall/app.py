@@ -327,22 +327,21 @@ def _parse_date_to_timestamp(date_str: Optional[str], end_of_day: bool = False) 
 def _entry_to_dict(entry) -> Dict[str, Any]:
     """Serializes a database Entry into a clean JSON-friendly dictionary."""
     import openrecall.config as config
-    from openrecall.ocr import get_ocr_provider, OCR_FAILED_SENTINEL
+    from openrecall.ocr import TesseractOCRProvider, OCR_FAILED_SENTINEL
 
     text_val = entry.text or ""
-    ocr_available = get_ocr_provider().is_available()
 
-    if not ocr_available:
-        ocr_status = "unavailable"
-        clean_text = ""
-    elif text_val == OCR_FAILED_SENTINEL:
+    if text_val == OCR_FAILED_SENTINEL:
         ocr_status = "failed"
         clean_text = ""
     elif text_val.strip():
         ocr_status = "success"
         clean_text = text_val.strip()
-    else:
+    elif TesseractOCRProvider().is_available():
         ocr_status = "empty"
+        clean_text = ""
+    else:
+        ocr_status = "unavailable"
         clean_text = ""
 
     snippet = clean_text[:200] + ("..." if len(clean_text) > 200 else "")
@@ -555,9 +554,32 @@ def timeline():
     <div class="bg-slate-50 rounded-lg p-4 border border-slate-200">
       <div class="flex items-center justify-between mb-2">
         <span class="text-xs font-bold text-slate-700 uppercase tracking-wider">Extracted Text</span>
+        {% if not ocr_available %}
+          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold">OCR Unavailable</span>
+        {% endif %}
       </div>
       <div id="timelineSnippet" class="text-xs text-slate-700 font-mono whitespace-pre-wrap break-words leading-relaxed max-h-40 overflow-y-auto">
-        {{ latest_entry.text or 'No OCR text extracted for this capture.' }}
+        {% if latest_entry_dict %}
+          {% if latest_entry_dict.ocr_status == 'success' %}
+            {{ latest_entry_dict.text }}
+          {% elif latest_entry_dict.ocr_status == 'empty' %}
+            <span class="text-slate-500 italic font-sans">OCR processed this capture, but no recognizable text was found.</span>
+          {% elif latest_entry_dict.ocr_status == 'failed' %}
+            <span class="text-rose-700 font-sans font-medium">OCR process failed or timed out for this capture.</span>
+          {% elif latest_entry_dict.ocr_status == 'unavailable' %}
+            <div class="text-amber-800 bg-amber-50 border border-amber-200 p-2.5 rounded text-xs space-y-1 font-sans">
+              <p class="font-semibold">Tesseract OCR was not detected on this system.</p>
+              <p class="text-[11px] text-amber-700">Install Tesseract and make sure it is available in PATH.</p>
+              <div class="pt-0.5">
+                <a href="https://github.com/Shiva9168/openrecall#ocr-setup" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 font-semibold text-indigo-700 hover:text-indigo-900 transition-colors text-[11px]">
+                  <span>View installation guide</span> &rarr;
+                </a>
+              </div>
+            </div>
+          {% endif %}
+        {% else %}
+          No timeline records available.
+        {% endif %}
       </div>
     </div>
   </div>
@@ -604,7 +626,19 @@ def timeline():
         imgFallback.classList.remove('hidden');
       }
       if (imgLink) imgLink.href = '/capture/' + entry.id;
-      if (snippet) snippet.innerText = entry.text || entry.text_snippet || 'No OCR text extracted for this capture.';
+      if (snippet) {
+        if (entry.ocr_status === 'success') {
+          snippet.innerText = entry.text || '';
+        } else if (entry.ocr_status === 'empty') {
+          snippet.innerHTML = '<span class="text-slate-500 italic font-sans">OCR processed this capture, but no recognizable text was found.</span>';
+        } else if (entry.ocr_status === 'failed') {
+          snippet.innerHTML = '<span class="text-rose-700 font-sans font-medium">OCR process failed or timed out for this capture.</span>';
+        } else if (entry.ocr_status === 'unavailable') {
+          snippet.innerHTML = '<div class="text-amber-800 bg-amber-50 border border-amber-200 p-2.5 rounded text-xs space-y-1 font-sans"><p class="font-semibold">Tesseract OCR was not detected on this system.</p><p class="text-[11px] text-amber-700">Install Tesseract and make sure it is available in PATH.</p><div class="pt-0.5"><a href="https://github.com/Shiva9168/openrecall#ocr-setup" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 font-semibold text-indigo-700 hover:text-indigo-900 transition-colors text-[11px]"><span>View installation guide</span> &rarr;</a></div></div>';
+        } else {
+          snippet.innerText = entry.text || entry.text_snippet || '';
+        }
+      }
     }
 
     function fetchCaptureForIndex(idx) {

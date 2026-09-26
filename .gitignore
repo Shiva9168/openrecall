@@ -10,6 +10,6 @@ build
 .pytest_cache
 .vscode
 .aider*
-.md/
+.md/*
 uv.lock
 scratch/
