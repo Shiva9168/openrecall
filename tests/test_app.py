@@ -4,7 +4,7 @@ import os
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from openrecall.app import app
 from openrecall.database import create_db, insert_entry
@@ -60,6 +60,18 @@ class TestAppRoutesPhase6A(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             html = response.get_data(as_text=True)
             self.assertIn("Search Results for", html)
+
+    def test_template_context_uses_active_ocr_provider(self):
+        """Verifies template context queries get_ocr_provider rather than hardcoding TesseractOCRProvider."""
+        with patch("openrecall.app.get_ocr_provider") as mock_get_provider:
+            mock_provider = MagicMock()
+            mock_provider.is_available.return_value = True
+            mock_get_provider.return_value = mock_provider
+
+            with patch("openrecall.database.db_path", self.db_path):
+                response = self.client.get("/")
+                self.assertEqual(response.status_code, 200)
+                mock_get_provider.assert_called()
 
     def test_api_timeline_json(self):
         with patch("openrecall.database.db_path", self.db_path):

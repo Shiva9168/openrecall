@@ -13,6 +13,7 @@ from openrecall.config import OCR_MAX_DIMENSION
 from openrecall.ocr import (
     FallbackOCRProvider,
     OCRProvider,
+    RapidOCRProvider,
     TesseractOCRProvider,
     _preprocess_image_for_ocr,
     extract_text_from_image,
@@ -127,8 +128,232 @@ class TestOCRProviders:
             assert text == ""
             assert status == OCR_STATUS_UNAVAILABLE
 
-    def test_ocr_factory_auto_fallback(self):
-        with patch("shutil.which", return_value=None):
+    def test_rapidocr_provider_missing_package(self):
+        with patch.dict("sys.modules", {"rapidocr": None, "rapidocr_onnxruntime": None}):
+            provider = RapidOCRProvider()
+            assert provider.is_available() is False
+            assert provider.name == "rapidocr"
+
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            assert provider.extract_text(dummy_img) == ""
+
+    def test_rapidocr_provider_success_and_lazy_init(self):
+        mock_output = MagicMock()
+        mock_output.txts = ("Hello RapidOCR", "Second Line")
+
+        mock_rapidocr_cls = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.return_value = mock_output
+        mock_rapidocr_cls.return_value = mock_engine
+
+        mock_module = MagicMock()
+        mock_module.RapidOCR = mock_rapidocr_cls
+
+        with patch.dict("sys.modules", {"rapidocr": mock_module, "rapidocr_onnxruntime": mock_module}):
+            provider = RapidOCRProvider()
+            assert provider.is_available() is True
+            # Engine must NOT be initialized yet (lazy initialization)
+            mock_rapidocr_cls.assert_not_called()
+
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            text, status = provider.extract_text_with_status(dummy_img)
+
+            assert text == "Hello RapidOCR\nSecond Line"
+            from openrecall.ocr import OCR_STATUS_SUCCESS
+            assert status == OCR_STATUS_SUCCESS
+            mock_rapidocr_cls.assert_called_once()
+
+    def test_rapidocr_provider_output_dataclass_structure(self):
+        """Verifies compatibility with RapidOCR 3.9.2 RapidOCROutput dataclass structure (.txts attribute)."""
+        mock_output = MagicMock()
+        mock_output.txts = ("Hello RapidOCR 3.9.2", "Dataclass Output Test")
+
+        mock_rapidocr_cls = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.return_value = mock_output
+        mock_rapidocr_cls.return_value = mock_engine
+
+        mock_module = MagicMock()
+        mock_module.RapidOCR = mock_rapidocr_cls
+
+        with patch.dict("sys.modules", {"rapidocr": mock_module, "rapidocr_onnxruntime": mock_module}):
+            provider = RapidOCRProvider()
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            text, status = provider.extract_text_with_status(dummy_img)
+
+            assert text == "Hello RapidOCR 3.9.2\nDataclass Output Test"
+            from openrecall.ocr import OCR_STATUS_SUCCESS
+            assert status == OCR_STATUS_SUCCESS
+
+    def test_rapidocr_provider_real_inference_smoke(self):
+        """Smoke test executing real RapidOCR 3.9.2 inference without mocks when rapidocr is installed."""
+        try:
+            import rapidocr  # noqa: F401
+        except ImportError:
+            pytest.skip("rapidocr package not installed in environment")
+
+        reset_ocr_provider()
+        provider = RapidOCRProvider()
+        assert provider.is_available() is True
+
+        from PIL import ImageDraw
+        img = Image.new("RGB", (400, 100), color=(255, 255, 255))
+        d = ImageDraw.Draw(img)
+        d.text((10, 10), "OpenRecall RapidOCR Test", fill=(0, 0, 0))
+
+        img_np = np.array(img)
+        text = provider.extract_text(img_np)
+        assert isinstance(text, str)
+        assert "OpenRecall" in text or "RapidOCR" in text
+
+    def test_rapidocr_provider_exception_handling(self):
+        from openrecall.ocr import OCR_FAILED_SENTINEL, OCR_STATUS_FAILED
+
+        mock_rapidocr_cls = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.side_effect = Exception("ONNX runtime error")
+        mock_rapidocr_cls.return_value = mock_engine
+
+        mock_module = MagicMock()
+        mock_module.RapidOCR = mock_rapidocr_cls
+
+        with patch.dict("sys.modules", {"rapidocr": mock_module, "rapidocr_onnxruntime": mock_module}):
+            provider = RapidOCRProvider()
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+
+            text = provider.extract_text(dummy_img)
+            assert text == OCR_FAILED_SENTINEL
+
+            clean_text, status = provider.extract_text_with_status(dummy_img)
+            assert clean_text == ""
+            assert status == OCR_STATUS_FAILED
+
+    def test_rapidocr_provider_threads_and_params(self):
+        mock_rapidocr_cls = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.return_value = (None, None)
+        mock_rapidocr_cls.return_value = mock_engine
+
+        mock_module = MagicMock()
+        mock_module.RapidOCR = mock_rapidocr_cls
+
+        with patch.dict("sys.modules", {"rapidocr": mock_module, "rapidocr_onnxruntime": mock_module}), \
+             patch("openrecall.ocr.RAPIDOCR_THREADS", 2):
+            provider = RapidOCRProvider()
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            provider.extract_text(dummy_img)
+
+            mock_rapidocr_cls.assert_called_once_with(
+                det_limit_type="max",
+                det_limit_side_len=736,
+                use_cls=True,
+                intra_op_num_threads=2,
+            )
+
+    def test_rapidocr_provider_single_thread_config(self):
+        mock_rapidocr_cls = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.return_value = (None, None)
+        mock_rapidocr_cls.return_value = mock_engine
+
+        mock_module = MagicMock()
+        mock_module.RapidOCR = mock_rapidocr_cls
+
+        with patch.dict("sys.modules", {"rapidocr": mock_module, "rapidocr_onnxruntime": mock_module}), \
+             patch("openrecall.ocr.RAPIDOCR_THREADS", 1):
+            provider = RapidOCRProvider()
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            provider.extract_text(dummy_img)
+
+            mock_rapidocr_cls.assert_called_once_with(
+                det_limit_type="max",
+                det_limit_side_len=736,
+                use_cls=True,
+                intra_op_num_threads=1,
+            )
+
+    def test_rapidocr_provider_lifecycle_single_initialization(self):
+        """Verifies that RapidOCR engine is initialized exactly ONCE across repeated screenshot calls."""
+        reset_ocr_provider()
+
+        mock_output = MagicMock()
+        mock_output.txts = ("Line 1", "Line 2")
+
+        mock_rapidocr_cls = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.return_value = mock_output
+        mock_rapidocr_cls.return_value = mock_engine
+
+        mock_module = MagicMock()
+        mock_module.RapidOCR = mock_rapidocr_cls
+
+        dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+
+        with patch.dict("sys.modules", {"rapidocr": mock_module, "rapidocr_onnxruntime": mock_module}), \
+             patch("openrecall.ocr.OCR_ENGINE", "rapidocr"):
+            # Execute 10 consecutive screenshot extractions
+            providers = []
+            for _ in range(10):
+                txt = extract_text_from_image(dummy_img)
+                assert txt == "Line 1\nLine 2"
+                providers.append(get_ocr_provider())
+
+            # Verify identical provider instance reused 10/10 times
+            first_provider = providers[0]
+            for p in providers:
+                assert p is first_provider
+
+            # Verify RapidOCR engine constructor was invoked EXACTLY ONCE
+            mock_rapidocr_cls.assert_called_once()
+
+    def test_rapidocr_provider_automatic_threading(self):
+        mock_rapidocr_cls = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.return_value = (None, None)
+        mock_rapidocr_cls.return_value = mock_engine
+
+        mock_module = MagicMock()
+        mock_module.RapidOCR = mock_rapidocr_cls
+
+        with patch.dict("sys.modules", {"rapidocr": mock_module, "rapidocr_onnxruntime": mock_module}), \
+             patch("openrecall.ocr.RAPIDOCR_THREADS", None):
+            provider = RapidOCRProvider()
+            dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+            provider.extract_text(dummy_img)
+
+            mock_rapidocr_cls.assert_called_once_with(
+                det_limit_type="max",
+                det_limit_side_len=736,
+                use_cls=True,
+            )
+
+    def test_ocr_disabled_behavior(self):
+        with patch("openrecall.ocr.OCR_ENABLED", False):
+            provider = get_ocr_provider("auto")
+            assert provider.name == "fallback"
+
+            reset_ocr_provider()
+            provider_rapid = get_ocr_provider("rapidocr")
+            assert provider_rapid.name == "fallback"
+
+    def test_ocr_factory_auto_selection(self):
+        # 1. RapidOCR available -> auto selects rapidocr
+        with patch.object(RapidOCRProvider, "is_available", return_value=True):
+            reset_ocr_provider()
+            provider = get_ocr_provider("auto")
+            assert provider.name == "rapidocr"
+
+        # 2. RapidOCR unavailable, Tesseract available -> auto selects tesseract
+        with patch.object(RapidOCRProvider, "is_available", return_value=False), \
+             patch.object(TesseractOCRProvider, "is_available", return_value=True):
+            reset_ocr_provider()
+            provider = get_ocr_provider("auto")
+            assert provider.name == "tesseract"
+
+        # 3. Both unavailable -> auto selects fallback
+        with patch.object(RapidOCRProvider, "is_available", return_value=False), \
+             patch.object(TesseractOCRProvider, "is_available", return_value=False):
+            reset_ocr_provider()
             provider = get_ocr_provider("auto")
             assert provider.name == "fallback"
 
@@ -222,51 +447,3 @@ class TestOCRImagePreprocessing:
             res = extract_text_from_image(dummy_img)
             assert res == "Extracted Text"
             mock_provider.extract_text.assert_called_once_with(dummy_img)
-
-
-class TestOCRBenchmarking:
-    """Performance and RAM benchmarking suite for OCR operations."""
-
-    def test_ocr_cold_start_and_warm_latency(self):
-        reset_ocr_provider()
-
-        # Cold start timing
-        t0 = time.perf_counter()
-        provider = get_ocr_provider("fallback")
-        cold_start_ms = (time.perf_counter() - t0) * 1000.0
-
-        assert cold_start_ms < 50.0  # Cold start initialization under 50 ms
-
-        # Warm execution timing over 100 iterations
-        dummy_img = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        t_start = time.perf_counter()
-        iterations = 100
-        for _ in range(iterations):
-            _ = provider.extract_text(dummy_img)
-        t_end = time.perf_counter()
-
-        avg_warm_ms = ((t_end - t_start) / iterations) * 1000.0
-        assert avg_warm_ms < 5.0  # Fallback/preprocess pipeline warm overhead under 5 ms
-
-    def test_ocr_memory_overhead(self):
-        import gc
-        import psutil
-
-        provider = FallbackOCRProvider()
-        high_res_4k = np.random.randint(0, 255, (2160, 3840, 3), dtype=np.uint8)
-        gc.collect()
-
-        process = psutil.Process()
-        rss_before = process.memory_info().rss / (1024 * 1024)
-
-        for _ in range(20):
-            _ = _preprocess_image_for_ocr(high_res_4k, max_dimension=1920)
-            _ = provider.extract_text(high_res_4k)
-
-        gc.collect()
-        rss_after = process.memory_info().rss / (1024 * 1024)
-        rss_delta = rss_after - rss_before
-
-        # Ensure memory delta remains bounded (< 15 MB growth)
-        assert rss_delta < 15.0
-

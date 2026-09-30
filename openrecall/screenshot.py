@@ -339,7 +339,8 @@ class CapturePipeline:
 
         platform_provider = get_platform_provider()
 
-        if not platform_provider.is_user_active():
+        # Initial capture iteration on startup always proceeds; subsequent iterations enforce idle timeout
+        if self.last_capture_timestamp is not None and not platform_provider.is_user_active():
             return 0
 
         # Early pause check before screenshot capture
@@ -379,6 +380,8 @@ class CapturePipeline:
                     self.queue.put_nowait(item)
                     self.last_screenshots[idx] = current_shot
                     changed_count += 1
+                    if self.last_capture_timestamp is None:
+                        logger.info(f"First screenshot captured and queued (timestamp {timestamp}).")
                     self.last_capture_timestamp = timestamp
                 except queue.Full:
                     try:
@@ -398,6 +401,7 @@ class CapturePipeline:
     def _capture_loop(self) -> None:
         """Main background loop polling monitor frames."""
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        logger.info("Capture loop thread entered.")
 
         while not self._stop_event.is_set():
             self.process_single_iteration()
@@ -406,6 +410,7 @@ class CapturePipeline:
 
     def _processing_worker_loop(self) -> None:
         """Background worker thread processing queued frames (saving disk image and DB record)."""
+        logger.info("Processing worker thread entered.")
 
         while not self._stop_event.is_set():
             try:

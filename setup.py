@@ -12,6 +12,8 @@ install_requires = [
     "rapidfuzz>=3.0.0",
     "Pillow>=10.0.0",
     "pytesseract>=0.3.10",
+    "rapidocr>=3.9.0",
+    "onnxruntime>=1.14.0",
 ]
 
 

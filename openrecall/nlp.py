@@ -23,8 +23,8 @@ def _get_model():
             _model = SentenceTransformer(MODEL_NAME)
             logger.info(f"SentenceTransformer model '{MODEL_NAME}' loaded successfully.")
         except Exception as e:
-            logger.warning(
-                f"SentenceTransformer model not available ({e}). Using zero vectors for embeddings."
+            logger.debug(
+                f"SentenceTransformer not available ({e}). Vector embeddings disabled."
             )
             _model = None
     return _model

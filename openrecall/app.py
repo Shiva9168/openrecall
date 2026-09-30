@@ -31,7 +31,7 @@ from openrecall.database import (
     search_entries,
 )
 from openrecall.maintenance import MaintenanceWorker
-from openrecall.ocr import TesseractOCRProvider
+from openrecall.ocr import TesseractOCRProvider, get_ocr_provider
 from openrecall.platform import get_platform_provider
 from openrecall.privacy import get_privacy_policy
 from openrecall.screenshot import get_capture_pipeline, record_screenshots_thread
@@ -76,13 +76,13 @@ app.jinja_env.filters["highlight_search_matches"] = highlight_search_matches
 @app.context_processor
 def inject_global_template_context():
     policy = get_privacy_policy()
-    ocr_provider = TesseractOCRProvider()
+    ocr_provider = get_ocr_provider()
     platform_provider = get_platform_provider()
     css_path = os.path.join(os.path.dirname(__file__), "static", "css", "output.css")
     css_v = int(os.path.getmtime(css_path)) if os.path.exists(css_path) else 1
     return {
         "is_paused": policy.is_paused(),
-        "ocr_available": ocr_provider.is_available(),
+        "ocr_available": ocr_provider.is_available() and ocr_provider.name != "fallback",
         "autostart_enabled": platform_provider.is_startup_enabled(),
         "appdata_folder": appdata_folder,
         "css_version": css_v,
@@ -1578,7 +1578,13 @@ def main():
 
         logger.info("Running Flask web server on port 8082")
         app.run(port=8082)
-    except BaseException as exc:
+    except (KeyboardInterrupt, SystemExit) as exit_evt:
+        code = getattr(exit_evt, "code", 0)
+        if code in (0, None):
+            logger.info("OpenRecall application shut down gracefully.")
+        else:
+            logger.warning(f"OpenRecall application exited with code {code}.")
+    except Exception as exc:
         logger.error(f"Unhandled crash in main execution loop: {exc}", exc_info=exc)
         if 'instance_lock' in locals():
             try:

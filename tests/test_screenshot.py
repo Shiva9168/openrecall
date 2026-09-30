@@ -85,6 +85,19 @@ class TestScreenshotPipelinePhase1D(unittest.TestCase):
         self.assertIsNone(pipeline._capture_thread)
         self.assertIsNone(pipeline._worker_thread)
 
+    def test_startup_capture_unblocked_by_initial_idle_check(self):
+        """Verifies initial screenshot capture on startup proceeds without requiring a web request or active mouse input."""
+        pipeline = CapturePipeline()
+        self.assertIsNone(pipeline.last_capture_timestamp)
+
+        with patch.object(pipeline, "last_screenshots", [np.zeros((10, 10, 3))]), \
+             patch("openrecall.screenshot.take_screenshots", return_value=[np.ones((10, 10, 3)) * 255]), \
+             patch("openrecall.platform.LinuxPlatformProvider.is_user_active", return_value=False):
+            res = pipeline.process_single_iteration()
+            # Initial startup capture must proceed (res == 1) even when idle check returns False
+            self.assertEqual(res, 1)
+            self.assertIsNotNone(pipeline.last_capture_timestamp)
+
 
 class TestPipelineIntegrationPhase1F(unittest.TestCase):
     """Test suite for Phase 1F processing pipeline integration and reliability."""

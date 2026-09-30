@@ -55,9 +55,17 @@ CAPTURE_QUEUE_MAX_SIZE = 10     # Strict bounded queue size for 2 GB RAM target
 CAPTURE_INTERVAL_SECONDS = 10.0
 
 # Centralized local OCR pipeline constants
-OCR_ENGINE = "auto"
-OCR_MAX_DIMENSION = 1440        # Bounded max image dimension for OCR to preserve small text font legibility while avoiding timeouts
-OCR_LANG = "eng"
+OCR_ENABLED: bool = True
+OCR_ENGINE: str = "auto"
+OCR_MAX_DIMENSION: int = 1440        # Bounded max image dimension for OCR to preserve small text font legibility while avoiding timeouts
+OCR_LANG: str = "eng"
+OCR_TIMEOUT_SECONDS: float = 10.0
+
+# RapidOCR benchmarked default constants
+RAPIDOCR_DET_LIMIT_TYPE: str = "max"
+RAPIDOCR_DET_LIMIT_SIDE_LEN: int = 736
+RAPIDOCR_USE_CLS: bool = True
+RAPIDOCR_THREADS: Optional[int] = None  # None = automatic/native engine default (2 threads is low-resource option)
 
 # Centralized storage capacity configuration defaults
 MAX_STORAGE_BYTES_DEFAULT: int = 0  # 0 = disabled / unlimited
@@ -150,11 +158,43 @@ parser.add_argument(
     help="Stop running background OpenRecall instance gracefully",
 )
 
+parser.add_argument(
+    "--ocr-engine",
+    choices=["auto", "rapidocr", "tesseract", "none", "fallback"],
+    default=None,
+    help="Select local OCR engine (auto, rapidocr, tesseract, none)",
+)
+
+parser.add_argument(
+    "--ocr-threads",
+    type=int,
+    default=None,
+    help="Number of CPU threads for RapidOCR inference (e.g. 2 for low-resource mode, default: auto)",
+)
+
+parser.add_argument(
+    "--disable-ocr",
+    action="store_true",
+    default=False,
+    help="Disable local OCR text extraction completely",
+)
+
 # Parse args safely with fallback when imported in test runners
 try:
     args, _ = parser.parse_known_args()
 except Exception:
     args = parser.parse_args([])
+
+if getattr(args, "disable_ocr", False):
+    OCR_ENABLED = False
+
+if getattr(args, "ocr_engine", None):
+    OCR_ENGINE = args.ocr_engine
+
+if getattr(args, "ocr_threads", None) is not None:
+    if args.ocr_threads <= 0:
+        raise ValueError("--ocr-threads must be a positive integer (> 0).")
+    RAPIDOCR_THREADS = args.ocr_threads
 
 is_bg_entry = False
 if sys.argv and sys.argv[0]:
