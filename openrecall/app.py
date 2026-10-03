@@ -75,6 +75,7 @@ app.jinja_env.filters["highlight_search_matches"] = highlight_search_matches
 
 @app.context_processor
 def inject_global_template_context():
+    import openrecall.config as config
     policy = get_privacy_policy()
     ocr_provider = get_ocr_provider()
     platform_provider = get_platform_provider()
@@ -82,7 +83,8 @@ def inject_global_template_context():
     css_v = int(os.path.getmtime(css_path)) if os.path.exists(css_path) else 1
     return {
         "is_paused": policy.is_paused(),
-        "ocr_available": ocr_provider.is_available() and ocr_provider.name != "fallback",
+        "ocr_enabled": config.OCR_ENABLED,
+        "ocr_available": config.OCR_ENABLED and ocr_provider.is_available() and ocr_provider.name != "fallback",
         "autostart_enabled": platform_provider.is_startup_enabled(),
         "appdata_folder": appdata_folder,
         "css_version": css_v,
@@ -333,7 +335,7 @@ def _parse_date_to_timestamp(date_str: Optional[str], end_of_day: bool = False) 
 def _entry_to_dict(entry) -> Dict[str, Any]:
     """Serializes a database Entry into a clean JSON-friendly dictionary."""
     import openrecall.config as config
-    from openrecall.ocr import TesseractOCRProvider, OCR_FAILED_SENTINEL
+    from openrecall.ocr import OCR_FAILED_SENTINEL
 
     text_val = entry.text or ""
 
@@ -343,11 +345,15 @@ def _entry_to_dict(entry) -> Dict[str, Any]:
     elif text_val.strip():
         ocr_status = "success"
         clean_text = text_val.strip()
-    elif TesseractOCRProvider().is_available():
-        ocr_status = "empty"
+    elif not config.OCR_ENABLED:
+        ocr_status = "disabled"
         clean_text = ""
     else:
-        ocr_status = "unavailable"
+        provider = get_ocr_provider()
+        if provider.is_available() and provider.name != "fallback":
+            ocr_status = "empty"
+        else:
+            ocr_status = "unavailable"
         clean_text = ""
 
     snippet = clean_text[:200] + ("..." if len(clean_text) > 200 else "")
@@ -552,7 +558,16 @@ def timeline():
           </svg>
         </div>
         <p class="text-xs font-semibold text-amber-400 mb-1">Screenshot file is missing from disk</p>
-        <p class="text-[11px] text-slate-400">Memory record and extracted text remain available.</p>
+        <p class="text-[11px] text-slate-400 mb-3">Memory record and extracted text remain available.</p>
+        {% if latest_entry_dict %}
+          <a id="timelineFallbackIdLink" href="/capture/{{ latest_entry_dict.id }}" class="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-amber-900/60 hover:bg-amber-900 text-amber-200 text-xs font-mono border border-amber-700/60 transition-colors cursor-pointer" title="View record details">
+            <span>ID:</span> <span id="timelineFallbackId">#{{ latest_entry_dict.id }}</span> &rarr;
+          </a>
+        {% else %}
+          <a id="timelineFallbackIdLink" href="#" class="hidden inline-flex items-center gap-1.5 px-3 py-1 rounded bg-amber-900/60 hover:bg-amber-900 text-amber-200 text-xs font-mono border border-amber-700/60 transition-colors cursor-pointer" title="View record details">
+            <span>ID:</span> <span id="timelineFallbackId"></span> &rarr;
+          </a>
+        {% endif %}
       </div>
     </div>
 
@@ -560,28 +575,24 @@ def timeline():
     <div class="bg-slate-50 rounded-lg p-4 border border-slate-200">
       <div class="flex items-center justify-between mb-2">
         <span class="text-xs font-bold text-slate-700 uppercase tracking-wider">Extracted Text</span>
-        {% if not ocr_available %}
-          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold">OCR Unavailable</span>
+        {% if not ocr_enabled and not (latest_entry_dict and latest_entry_dict.text) %}
+          <span class="px-2 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-semibold">OCR Disabled</span>
+        {% elif not ocr_available and not (latest_entry_dict and latest_entry_dict.text) %}
+          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[10px] font-semibold">OCR Engine Unavailable</span>
         {% endif %}
       </div>
       <div id="timelineSnippet" class="text-xs text-slate-700 font-mono whitespace-pre-wrap break-words leading-relaxed max-h-40 overflow-y-auto">
         {% if latest_entry_dict %}
           {% if latest_entry_dict.ocr_status == 'success' %}
             {{ latest_entry_dict.text }}
+          {% elif latest_entry_dict.ocr_status == 'disabled' %}
+            <span class="text-slate-500 italic font-sans">OCR is disabled</span>
           {% elif latest_entry_dict.ocr_status == 'empty' %}
-            <span class="text-slate-500 italic font-sans">OCR processed this capture, but no recognizable text was found.</span>
+            <span class="text-slate-500 italic font-sans">No text found in this capture.</span>
           {% elif latest_entry_dict.ocr_status == 'failed' %}
             <span class="text-rose-700 font-sans font-medium">OCR process failed or timed out for this capture.</span>
           {% elif latest_entry_dict.ocr_status == 'unavailable' %}
-            <div class="text-amber-800 bg-amber-50 border border-amber-200 p-2.5 rounded text-xs space-y-1 font-sans">
-              <p class="font-semibold">Tesseract OCR was not detected on this system.</p>
-              <p class="text-[11px] text-amber-700">Install Tesseract and make sure it is available in PATH.</p>
-              <div class="pt-0.5">
-                <a href="https://github.com/Shiva9168/openrecall#ocr-setup" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 font-semibold text-indigo-700 hover:text-indigo-900 transition-colors text-[11px]">
-                  <span>View installation guide</span> &rarr;
-                </a>
-              </div>
-            </div>
+            <span class="text-amber-800 font-sans font-medium">OCR engine unavailable</span>
           {% endif %}
         {% else %}
           No timeline records available.
@@ -632,15 +643,26 @@ def timeline():
         imgFallback.classList.remove('hidden');
       }
       if (imgLink) imgLink.href = '/capture/' + entry.id;
+      const fallbackLink = document.getElementById('timelineFallbackIdLink');
+      const fallbackId = document.getElementById('timelineFallbackId');
+      if (fallbackLink && entry.id) {
+        fallbackLink.href = '/capture/' + entry.id;
+        fallbackLink.classList.remove('hidden');
+      }
+      if (fallbackId && entry.id) {
+        fallbackId.innerText = '#' + entry.id;
+      }
       if (snippet) {
         if (entry.ocr_status === 'success') {
           snippet.innerText = entry.text || '';
+        } else if (entry.ocr_status === 'disabled') {
+          snippet.innerHTML = '<span class="text-slate-500 italic font-sans">OCR is disabled</span>';
         } else if (entry.ocr_status === 'empty') {
-          snippet.innerHTML = '<span class="text-slate-500 italic font-sans">OCR processed this capture, but no recognizable text was found.</span>';
+          snippet.innerHTML = '<span class="text-slate-500 italic font-sans">No text found in this capture.</span>';
         } else if (entry.ocr_status === 'failed') {
           snippet.innerHTML = '<span class="text-rose-700 font-sans font-medium">OCR process failed or timed out for this capture.</span>';
         } else if (entry.ocr_status === 'unavailable') {
-          snippet.innerHTML = '<div class="text-amber-800 bg-amber-50 border border-amber-200 p-2.5 rounded text-xs space-y-1 font-sans"><p class="font-semibold">Tesseract OCR was not detected on this system.</p><p class="text-[11px] text-amber-700">Install Tesseract and make sure it is available in PATH.</p><div class="pt-0.5"><a href="https://github.com/Shiva9168/openrecall#ocr-setup" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 font-semibold text-indigo-700 hover:text-indigo-900 transition-colors text-[11px]"><span>View installation guide</span> &rarr;</a></div></div>';
+          snippet.innerHTML = '<span class="text-amber-800 font-sans font-medium">OCR engine unavailable</span>';
         } else {
           snippet.innerText = entry.text || entry.text_snippet || '';
         }
@@ -759,11 +781,13 @@ def timeline():
         {% endif %}
       </div>
       <div class="flex items-center justify-between pb-2 border-b border-slate-200">
-        <span class="font-semibold text-slate-700">Tesseract OCR Engine:</span>
-        {% if ocr_available %}
+        <span class="font-semibold text-slate-700">OCR Engine Status:</span>
+        {% if not ocr_enabled %}
+          <span class="px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-semibold">Disabled</span>
+        {% elif ocr_available %}
           <span class="px-2 py-0.5 rounded bg-sky-100 text-sky-800 font-semibold">Available</span>
         {% else %}
-          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold" title="Screenshots captured without text search">Unavailable (Capture still active)</span>
+          <span class="px-2 py-0.5 rounded bg-amber-100 text-amber-800 font-semibold" title="Screenshots captured without text search">Unavailable</span>
         {% endif %}
       </div>
       <div class="flex items-center justify-between pb-2 border-b border-slate-200">
@@ -917,7 +941,7 @@ def search():
       <ul class="list-disc list-inside space-y-0.5 text-[11px] text-slate-500">
         <li>Try broader search terms or partial words</li>
         <li>Check or clear date filters</li>
-        <li>Verify Tesseract OCR is installed to extract text from screenshots</li>
+        <li>Verify an OCR engine is enabled and available to extract text from screenshots</li>
       </ul>
     </div>
   </div>
@@ -1120,9 +1144,13 @@ def capture_detail(entry_id: int):
       </div>
       {% if entry_dict.ocr_status == 'success' %}
         <pre id="ocrTextBlock" class="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs text-slate-700 font-mono max-h-60 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed">{{ entry_dict.text }}</pre>
+      {% elif entry_dict.ocr_status == 'disabled' %}
+        <p class="text-xs text-slate-500 italic bg-slate-50 p-3 rounded-lg border border-slate-200 font-sans">
+          OCR is disabled
+        </p>
       {% elif entry_dict.ocr_status == 'empty' %}
-        <p class="text-xs text-slate-500 italic bg-slate-50 p-3 rounded-lg border border-slate-200">
-          OCR processed this capture, but no recognizable text was found.
+        <p class="text-xs text-slate-500 italic bg-slate-50 p-3 rounded-lg border border-slate-200 font-sans">
+          No text found in this capture.
         </p>
       {% elif entry_dict.ocr_status == 'failed' %}
         <div class="bg-rose-50 border border-rose-200/80 rounded-lg p-3 text-xs text-rose-900 space-y-1">
@@ -1132,26 +1160,21 @@ def capture_detail(entry_id: int):
             </svg>
             <span>OCR Process Warning</span>
           </div>
-          <p class="text-[11px] text-rose-700 leading-relaxed">
+          <p class="text-[11px] text-rose-700 leading-relaxed font-sans">
             OCR execution failed or timed out during processing for this capture.
           </p>
         </div>
       {% elif entry_dict.ocr_status == 'unavailable' %}
-        <div class="bg-amber-50 border border-amber-200/80 rounded-lg p-3 text-xs text-amber-900 space-y-2">
+        <div class="bg-amber-50 border border-amber-200/80 rounded-lg p-3 text-xs text-amber-900 space-y-1">
           <div class="flex items-center gap-1.5 font-semibold text-amber-800">
             <svg class="w-4 h-4 text-amber-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
             </svg>
-            <span>OCR Unavailable</span>
+            <span>OCR Engine Unavailable</span>
           </div>
-          <p class="text-[11px] text-amber-700 leading-relaxed">
-            Tesseract was not detected on this system. Install Tesseract and make sure it is available in PATH to extract text from screenshots.
+          <p class="text-[11px] text-amber-700 leading-relaxed font-sans">
+            OCR engine unavailable
           </p>
-          <div class="pt-1">
-            <a href="https://github.com/Shiva9168/openrecall#ocr-setup" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 font-semibold text-indigo-700 hover:text-indigo-900 transition-colors text-[11px]">
-              <span>View installation guide</span> &rarr;
-            </a>
-          </div>
         </div>
       {% endif %}
     </div>

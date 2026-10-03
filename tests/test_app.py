@@ -247,7 +247,7 @@ class TestAppRoutesPhase6A(unittest.TestCase):
 
                 self.assertIn("Welcome to OpenRecall", html)
                 self.assertIn("Capture Pipeline:", html)
-                self.assertIn("Tesseract OCR Engine:", html)
+                self.assertIn("OCR Engine Status:", html)
                 self.assertIn("Local Data Directory:", html)
         finally:
             empty_dir.cleanup()
@@ -462,7 +462,112 @@ class TestAppRoutesPhase6A(unittest.TestCase):
         self.assertFalse(result)
 
 
+class TestPhase12_2_UI_UX_Refinements(unittest.TestCase):
+    """Test suite for Phase 12.2 UI/UX refinements, OCR metadata consistency, and missing image links."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.temp_dir.name, "test_recall.db")
+        create_db(self.db_path)
+        self.app = app
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_ocr_disabled_displays_disabled_message(self):
+        """1. OCR disabled -> 'OCR is disabled'."""
+        ts = int(time.time())
+        with patch("openrecall.database.db_path", self.db_path):
+            insert_entry("", ts, app="TestApp", title="Disabled Title", target_path=self.db_path)
+
+            with patch("openrecall.config.OCR_ENABLED", False):
+                res = self.client.get("/")
+                self.assertEqual(res.status_code, 200)
+                html = res.get_data(as_text=True)
+
+                self.assertIn("OCR is disabled", html)
+                self.assertNotIn("OCR Engine Unavailable", html)
+                self.assertNotIn("Tesseract not found", html)
+
+    def test_ocr_enabled_engine_unavailable_displays_unavailable_message(self):
+        """2. OCR enabled + engine unavailable -> 'OCR engine unavailable'."""
+        ts = int(time.time())
+        with patch("openrecall.database.db_path", self.db_path):
+            insert_entry("", ts, app="TestApp", title="Unavail Title", target_path=self.db_path)
+
+            with patch("openrecall.config.OCR_ENABLED", True), \
+                 patch("openrecall.app.get_ocr_provider") as mock_get_provider:
+                mock_provider = MagicMock()
+                mock_provider.is_available.return_value = False
+                mock_provider.name = "fallback"
+                mock_get_provider.return_value = mock_provider
+
+                res = self.client.get("/")
+                self.assertEqual(res.status_code, 200)
+                html = res.get_data(as_text=True)
+
+                self.assertIn("OCR engine unavailable", html)
+
+    def test_stored_ocr_text_prevents_false_unavailable_badge(self):
+        """3. OCR text already exists -> no false unavailable message."""
+        ts = int(time.time())
+        with patch("openrecall.database.db_path", self.db_path):
+            insert_entry("Stored OCR Extracted Text Sample", ts, app="TestApp", title="Test Window", target_path=self.db_path)
+
+            with patch("openrecall.app.get_ocr_provider") as mock_get_provider:
+                mock_provider = MagicMock()
+                mock_provider.is_available.return_value = False
+                mock_provider.name = "fallback"
+                mock_get_provider.return_value = mock_provider
+
+                res = self.client.get("/")
+                self.assertEqual(res.status_code, 200)
+                html = res.get_data(as_text=True)
+
+                self.assertIn("Stored OCR Extracted Text Sample", html)
+                self.assertNotIn("OCR Engine Unavailable", html)
+                self.assertNotIn("OCR Unavailable", html)
+
+    def test_no_ocr_text_displays_accurate_empty_message(self):
+        """4. OCR enabled + no stored OCR text -> 'No text found in this capture.'."""
+        ts = int(time.time())
+        with patch("openrecall.database.db_path", self.db_path):
+            insert_entry("", ts, app="TestApp", title="No OCR Title", target_path=self.db_path)
+
+            with patch("openrecall.config.OCR_ENABLED", True):
+                res = self.client.get("/")
+                self.assertEqual(res.status_code, 200)
+                html = res.get_data(as_text=True)
+
+                self.assertIn("No text found in this capture.", html)
+
+    def test_missing_screenshot_displays_clickable_record_id(self):
+        """5. Missing-image ID remains clickable."""
+        ts = int(time.time())
+        with patch("openrecall.database.db_path", self.db_path):
+            row_id = insert_entry("Text with missing file", ts, app="TestApp", title="Test Title", image_path="nonexistent_frame.webp", target_path=self.db_path)
+
+            res_timeline = self.client.get("/")
+            self.assertEqual(res_timeline.status_code, 200)
+            html = res_timeline.get_data(as_text=True)
+
+            self.assertIn("Screenshot file is missing from disk", html)
+            self.assertIn(f'href="/capture/{row_id}"', html)
+            self.assertIn(f'#{row_id}', html)
+
+            res_detail = self.client.get(f"/capture/{row_id}")
+            self.assertEqual(res_detail.status_code, 200)
+            detail_html = res_detail.get_data(as_text=True)
+
+            self.assertIn("Screenshot file is missing", detail_html)
+            self.assertIn("Text with missing file", detail_html)
+            self.assertIn("Delete capture", detail_html)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
 
