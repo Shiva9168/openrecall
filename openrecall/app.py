@@ -1,6 +1,7 @@
 """Flask web application and REST API for OpenRecall timeline and search UX."""
 
 import html
+import gc
 import logging
 import os
 import re
@@ -31,7 +32,7 @@ from openrecall.database import (
     search_entries,
 )
 from openrecall.maintenance import MaintenanceWorker
-from openrecall.ocr import TesseractOCRProvider, get_ocr_provider
+from openrecall.ocr import TesseractOCRProvider, get_ocr_provider, reset_ocr_provider
 from openrecall.platform import get_platform_provider
 from openrecall.privacy import get_privacy_policy
 from openrecall.screenshot import get_capture_pipeline, record_screenshots_thread
@@ -1516,6 +1517,41 @@ def main():
         except Exception as e:
             logger.warning(f"FreeConsole execution warning: {e}")
 
+    import threading
+    pipeline = None
+    maintenance_worker = None
+    instance_lock = None
+    _shutdown_done = False
+    _shutdown_lock = threading.Lock()
+
+    def cleanup_application_resources():
+        nonlocal _shutdown_done, pipeline, maintenance_worker, instance_lock
+        with _shutdown_lock:
+            if _shutdown_done:
+                return
+            _shutdown_done = True
+
+        if pipeline:
+            try:
+                pipeline.stop(timeout=2.0)
+            except Exception as e:
+                logger.error(f"Error stopping pipeline during shutdown: {e}")
+        if maintenance_worker:
+            try:
+                maintenance_worker.stop(timeout=2.0)
+            except Exception as e:
+                logger.error(f"Error stopping maintenance worker during shutdown: {e}")
+        try:
+            reset_ocr_provider()
+            gc.collect()
+        except Exception as e:
+            logger.error(f"Error releasing OCR provider during shutdown: {e}")
+        if instance_lock:
+            try:
+                instance_lock.release()
+            except Exception:
+                pass
+
     try:
         create_db()
 
@@ -1584,13 +1620,10 @@ def main():
         _active_maintenance_worker = maintenance_worker
         maintenance_worker.start()
 
-        # 5. Graceful OS signal handling (SIGINT, SIGTERM)
         def signal_handler(sig, frame):
             print("\nShutdown signal received. Stopping background threads gracefully...")
             logger.info(f"Shutdown signal {sig} received. Stopping background threads...")
-            pipeline.stop(timeout=2.0)
-            maintenance_worker.stop(timeout=2.0)
-            instance_lock.release()
+            cleanup_application_resources()
             sys.exit(0)
 
         try:
@@ -1609,19 +1642,9 @@ def main():
             logger.warning(f"OpenRecall application exited with code {code}.")
     except Exception as exc:
         logger.error(f"Unhandled crash in main execution loop: {exc}", exc_info=exc)
-        if 'instance_lock' in locals():
-            try:
-                instance_lock.release()
-            except Exception:
-                pass
         raise
     finally:
-        if 'instance_lock' in locals():
-            try:
-                instance_lock.release()
-
-            except Exception:
-                pass
+        cleanup_application_resources()
 
 
 if __name__ == "__main__":

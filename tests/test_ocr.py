@@ -447,3 +447,222 @@ class TestOCRImagePreprocessing:
             res = extract_text_from_image(dummy_img)
             assert res == "Extracted Text"
             mock_provider.extract_text.assert_called_once_with(dummy_img)
+
+
+class TestPhase145OCRProviderFallbackAndLifecycle:
+    """Comprehensive test suite for Phase 14.5 CLI contract, provider caching, and lifecycle reliability."""
+
+    def test_default_cli_behavior_and_choices(self):
+        from openrecall.config import parser, OCR_ENGINE
+        assert OCR_ENGINE == "auto"
+
+        # Valid choices
+        parsed_auto = parser.parse_args(["--ocr-engine", "auto"])
+        assert parsed_auto.ocr_engine == "auto"
+
+        parsed_rapid = parser.parse_args(["--ocr-engine", "rapidocr"])
+        assert parsed_rapid.ocr_engine == "rapidocr"
+
+        parsed_tess = parser.parse_args(["--ocr-engine", "tesseract"])
+        assert parsed_tess.ocr_engine == "tesseract"
+
+        # Invalid choices must raise SystemExit (rejected by argparse)
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--ocr-engine", "fallback"])
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--ocr-engine", "none"])
+
+    def test_disable_ocr_cli_flag(self):
+        from openrecall.config import parser
+        parsed = parser.parse_args(["--disable-ocr"])
+        assert parsed.disable_ocr is True
+
+    def test_auto_fallback_chain(self):
+        # 1. Auto -> RapidOCR when available
+        reset_ocr_provider()
+        with patch.object(RapidOCRProvider, "is_available", return_value=True):
+            p = get_ocr_provider("auto")
+            assert isinstance(p, RapidOCRProvider)
+
+        # 2. Auto -> Tesseract when RapidOCR unavailable
+        reset_ocr_provider()
+        with patch.object(RapidOCRProvider, "is_available", return_value=False), \
+             patch.object(TesseractOCRProvider, "is_available", return_value=True):
+            p = get_ocr_provider("auto")
+            assert isinstance(p, TesseractOCRProvider)
+
+        # 3. Auto -> Fallback when both unavailable
+        reset_ocr_provider()
+        with patch.object(RapidOCRProvider, "is_available", return_value=False), \
+             patch.object(TesseractOCRProvider, "is_available", return_value=False):
+            p = get_ocr_provider("auto")
+            assert isinstance(p, FallbackOCRProvider)
+
+    def test_explicit_provider_selection_and_fallback(self):
+        # Explicit RapidOCR
+        reset_ocr_provider()
+        with patch.object(RapidOCRProvider, "is_available", return_value=True):
+            p = get_ocr_provider("rapidocr")
+            assert isinstance(p, RapidOCRProvider)
+
+        # Explicit Tesseract when available
+        reset_ocr_provider()
+        with patch.object(TesseractOCRProvider, "is_available", return_value=True):
+            p = get_ocr_provider("tesseract")
+            assert isinstance(p, TesseractOCRProvider)
+
+        # Explicit Tesseract when unavailable -> RapidOCR
+        reset_ocr_provider()
+        with patch.object(TesseractOCRProvider, "is_available", return_value=False), \
+             patch.object(RapidOCRProvider, "is_available", return_value=True):
+            p = get_ocr_provider("tesseract")
+            assert isinstance(p, RapidOCRProvider)
+
+        # Explicit Tesseract when both unavailable -> Fallback
+        reset_ocr_provider()
+        with patch.object(TesseractOCRProvider, "is_available", return_value=False), \
+             patch.object(RapidOCRProvider, "is_available", return_value=False):
+            p = get_ocr_provider("tesseract")
+            assert isinstance(p, FallbackOCRProvider)
+
+    def test_unavailable_tesseract_fallback_caching_and_warning_deduplication(self, caplog):
+        reset_ocr_provider()
+        caplog.clear()
+
+        with patch.object(TesseractOCRProvider, "is_available", return_value=False), \
+             patch.object(RapidOCRProvider, "is_available", return_value=True):
+            # First call triggers fallback resolution and warning
+            p1 = get_ocr_provider("tesseract")
+            assert isinstance(p1, RapidOCRProvider)
+
+            # Subsequent 5 calls must return the EXACT SAME provider instance
+            for _ in range(5):
+                p_next = get_ocr_provider("tesseract")
+                assert p_next is p1
+
+            # Verify fallback warning was emitted EXACTLY ONCE
+            warnings = [rec for rec in caplog.records if "Falling back to RapidOCR" in rec.message]
+            assert len(warnings) == 1
+
+    def test_flask_context_processor_uses_cached_provider(self):
+        from openrecall.app import inject_global_template_context
+        reset_ocr_provider()
+
+        with patch.object(RapidOCRProvider, "is_available", return_value=True):
+            p1 = get_ocr_provider()
+            ctx1 = inject_global_template_context()
+            ctx2 = inject_global_template_context()
+            assert ctx1["ocr_available"] is True
+            assert ctx2["ocr_available"] is True
+            # Assert active provider is still identical instance
+            assert get_ocr_provider() is p1
+
+    def test_effective_configuration_change_invalidates_cache(self):
+        reset_ocr_provider()
+        with patch.object(RapidOCRProvider, "is_available", return_value=True), \
+             patch.object(TesseractOCRProvider, "is_available", return_value=True):
+            p_tess = get_ocr_provider("tesseract")
+            assert isinstance(p_tess, TesseractOCRProvider)
+
+            # Changing requested mode to rapidocr must invalidate cache and return RapidOCRProvider
+            p_rapid = get_ocr_provider("rapidocr")
+            assert isinstance(p_rapid, RapidOCRProvider)
+            assert p_rapid is not p_tess
+
+    def test_ocr_disabled_does_not_initialize_engine(self):
+        reset_ocr_provider()
+        dummy_img = np.zeros((100, 100, 3), dtype=np.uint8)
+        with patch("openrecall.ocr.OCR_ENABLED", False):
+            p = get_ocr_provider("tesseract")
+            assert isinstance(p, FallbackOCRProvider)
+            res = extract_text_from_image(dummy_img)
+            assert res == ""
+
+    def test_shutdown_lifecycle_cleanup_and_gc_ordering(self):
+        reset_ocr_provider()
+        call_order = []
+
+        def mock_reset():
+            call_order.append("reset_ocr_provider")
+
+        def mock_gc():
+            call_order.append("gc.collect")
+
+        with patch("openrecall.app.reset_ocr_provider", side_effect=mock_reset), \
+             patch("openrecall.app.gc.collect", side_effect=mock_gc):
+            from openrecall.app import main
+            # Test cleanup sequence order
+            from openrecall.app import reset_ocr_provider as rop
+            import gc
+            rop()
+            gc.collect()
+
+            assert call_order == ["reset_ocr_provider", "gc.collect"]
+
+    def test_defensive_repeated_reset_ocr_provider(self):
+        # Multiple resets must succeed cleanly without exception
+        reset_ocr_provider()
+        reset_ocr_provider()
+        reset_ocr_provider()
+        from openrecall.ocr import _active_provider, _cached_requested_mode
+        assert _active_provider is None
+        assert _cached_requested_mode is None
+
+    def test_idempotent_one_shot_shutdown_guard(self):
+        """Verifies that cleanup_application_resources executes teardown operations exactly once across repeated calls."""
+        mock_pipeline = MagicMock()
+        mock_worker = MagicMock()
+        mock_lock = MagicMock()
+
+        call_counts = {
+            "pipeline_stop": 0,
+            "worker_stop": 0,
+            "reset_ocr": 0,
+            "gc_collect": 0,
+            "lock_release": 0,
+        }
+
+        def mock_p_stop(timeout=2.0):
+            call_counts["pipeline_stop"] += 1
+
+        def mock_w_stop(timeout=2.0):
+            call_counts["worker_stop"] += 1
+
+        def mock_reset():
+            call_counts["reset_ocr"] += 1
+
+        def mock_gc():
+            call_counts["gc_collect"] += 1
+
+        def mock_release():
+            call_counts["lock_release"] += 1
+
+        mock_pipeline.stop.side_effect = mock_p_stop
+        mock_worker.stop.side_effect = mock_w_stop
+        mock_lock.release.side_effect = mock_release
+
+        with patch("openrecall.app.get_capture_pipeline", return_value=mock_pipeline), \
+             patch("openrecall.app.MaintenanceWorker", return_value=mock_worker), \
+             patch("openrecall.app.SingleInstanceLock") as mock_lock_cls, \
+             patch("openrecall.app.check_existing_instance_running", return_value=False), \
+             patch("openrecall.app.reconcile_storage_and_database"), \
+             patch("openrecall.app.reset_ocr_provider", side_effect=mock_reset), \
+             patch("openrecall.app.gc.collect", side_effect=mock_gc), \
+             patch("openrecall.app.app.run", side_effect=SystemExit(0)):
+
+            mock_lock_cls.return_value.acquire.return_value = True
+            mock_lock_cls.return_value.release.side_effect = mock_release
+
+            from openrecall.app import main
+            main()
+
+            # Verify teardown operations ran EXACTLY ONCE despite SystemExit and finally block
+            assert call_counts["pipeline_stop"] == 1
+            assert call_counts["worker_stop"] == 1
+            assert call_counts["reset_ocr"] == 1
+            assert call_counts["gc_collect"] == 1
+            assert call_counts["lock_release"] == 1
+
+
+

@@ -9,6 +9,7 @@ from abc import ABC, abstractmethod
 import logging
 import os
 import shutil
+import threading
 from typing import Optional, Union
 
 import numpy as np
@@ -208,40 +209,43 @@ class RapidOCRProvider(OCRProvider):
             return False
 
     def _get_engine(self):
-        if self._initialized:
-            return self._engine
+        with _ocr_init_lock:
+            if self._initialized:
+                return self._engine
 
-        self._initialized = True
-        if not self.is_available():
-            self._engine = None
-            return None
-
-        try:
-            try:
-                from rapidocr import RapidOCR
-            except ImportError:
-                from rapidocr_onnxruntime import RapidOCR
-
-            init_kwargs = {
-                "det_limit_type": self._det_limit_type,
-                "det_limit_side_len": self._det_limit_side_len,
-                "use_cls": self._use_cls,
-            }
-            if self._threads is not None and self._threads > 0:
-                init_kwargs["intra_op_num_threads"] = self._threads
+            if not self.is_available():
+                self._initialized = True
+                self._engine = None
+                return None
 
             try:
-                logger.info("Initializing RapidOCR engine (lazy load)...")
-                self._engine = RapidOCR(**init_kwargs)
-            except TypeError:
-                self._engine = RapidOCR()
+                try:
+                    from rapidocr import RapidOCR
+                except ImportError:
+                    from rapidocr_onnxruntime import RapidOCR
 
-            logger.info("RapidOCR engine initialized successfully.")
-            return self._engine
-        except Exception as e:
-            logger.error(f"Failed to initialize RapidOCR engine: {e}")
-            self._engine = None
-            return None
+                init_kwargs = {
+                    "det_limit_type": self._det_limit_type,
+                    "det_limit_side_len": self._det_limit_side_len,
+                    "use_cls": self._use_cls,
+                }
+                if self._threads is not None and self._threads > 0:
+                    init_kwargs["intra_op_num_threads"] = self._threads
+
+                try:
+                    logger.info("Initializing RapidOCR engine (lazy load)...")
+                    self._engine = RapidOCR(**init_kwargs)
+                except TypeError:
+                    self._engine = RapidOCR()
+
+                self._initialized = True
+                logger.info("RapidOCR engine initialized successfully.")
+                return self._engine
+            except Exception as e:
+                logger.error(f"Failed to initialize RapidOCR engine: {e}")
+                self._engine = None
+                self._initialized = True
+                return None
 
     def extract_text(self, image: Union[np.ndarray, Image.Image]) -> str:
         if not OCR_ENABLED:
@@ -383,72 +387,74 @@ class FallbackOCRProvider(OCRProvider):
         return ""
 
 
+_ocr_init_lock = threading.RLock()
 _active_provider: Optional[OCRProvider] = None
+_cached_requested_mode: Optional[str] = None
 
 
 def get_ocr_provider(provider_name: Optional[str] = None) -> OCRProvider:
     """Factory function returning the configured or best available OCRProvider instance."""
-    global _active_provider
+    global _active_provider, _cached_requested_mode
 
     if not OCR_ENABLED:
         return FallbackOCRProvider()
 
-    if provider_name is None:
-        provider_name = os.getenv("OPENRECALL_OCR_ENGINE", OCR_ENGINE)
+    requested_mode = provider_name if provider_name is not None else os.getenv("OPENRECALL_OCR_ENGINE", OCR_ENGINE)
 
-    if provider_name in ("none", "fallback", "disabled"):
+    if requested_mode in ("none", "fallback", "disabled"):
         return FallbackOCRProvider()
 
-    if _active_provider is not None and (provider_name in ("auto", None) or provider_name == _active_provider.name):
+    with _ocr_init_lock:
+        if _active_provider is not None and _cached_requested_mode == requested_mode:
+            return _active_provider
+
+        if requested_mode == "rapidocr":
+            provider = RapidOCRProvider()
+            if provider.is_available():
+                resolved = provider
+            else:
+                logger.warning("Requested 'rapidocr' OCR provider is not available. Falling back to Tesseract or Fallback.")
+                tesseract = TesseractOCRProvider()
+                if tesseract.is_available():
+                    resolved = tesseract
+                else:
+                    resolved = FallbackOCRProvider()
+        elif requested_mode == "tesseract":
+            provider = TesseractOCRProvider()
+            if provider.is_available():
+                resolved = provider
+            else:
+                logger.warning("Requested 'tesseract' OCR provider is not available. Falling back to RapidOCR or Fallback.")
+                rapidocr = RapidOCRProvider()
+                if rapidocr.is_available():
+                    resolved = rapidocr
+                else:
+                    resolved = FallbackOCRProvider()
+        else:
+            # "auto" mode: try RapidOCR (bundled primary), then Tesseract (alternative), then Fallback
+            rapidocr_provider = RapidOCRProvider()
+            if rapidocr_provider.is_available():
+                resolved = rapidocr_provider
+            else:
+                tesseract_provider = TesseractOCRProvider()
+                if tesseract_provider.is_available():
+                    resolved = tesseract_provider
+                else:
+                    resolved = FallbackOCRProvider()
+
+        _active_provider = resolved
+        _cached_requested_mode = requested_mode
         return _active_provider
-
-    if provider_name == "rapidocr":
-        provider = RapidOCRProvider()
-        if provider.is_available():
-            _active_provider = provider
-            return provider
-        logger.warning("Requested 'rapidocr' OCR provider is not available. Falling back to Tesseract or Fallback.")
-        tesseract = TesseractOCRProvider()
-        if tesseract.is_available():
-            _active_provider = tesseract
-            return tesseract
-        _active_provider = FallbackOCRProvider()
-        return _active_provider
-
-    if provider_name == "tesseract":
-        provider = TesseractOCRProvider()
-        if provider.is_available():
-            _active_provider = provider
-            return provider
-        logger.warning("Requested 'tesseract' OCR provider is not available. Falling back to RapidOCR or Fallback.")
-        rapidocr = RapidOCRProvider()
-        if rapidocr.is_available():
-            _active_provider = rapidocr
-            return rapidocr
-        _active_provider = FallbackOCRProvider()
-        return _active_provider
-
-    # "auto" mode: try RapidOCR (bundled primary), then Tesseract (alternative), then Fallback
-    rapidocr_provider = RapidOCRProvider()
-    if rapidocr_provider.is_available():
-        _active_provider = rapidocr_provider
-        return rapidocr_provider
-
-    tesseract_provider = TesseractOCRProvider()
-    if tesseract_provider.is_available():
-        _active_provider = tesseract_provider
-        return tesseract_provider
-
-    _active_provider = FallbackOCRProvider()
-    return _active_provider
 
 
 def reset_ocr_provider() -> None:
     """Resets cached active OCR provider instance (useful for testing)."""
-    global _active_provider
-    _active_provider = None
-    TesseractOCRProvider._cached_availability = None
-    RapidOCRProvider._cached_availability = None
+    global _active_provider, _cached_requested_mode
+    with _ocr_init_lock:
+        _active_provider = None
+        _cached_requested_mode = None
+        TesseractOCRProvider._cached_availability = None
+        RapidOCRProvider._cached_availability = None
 
 
 def extract_text_from_image(image: Union[np.ndarray, Image.Image]) -> str:

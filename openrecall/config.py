@@ -160,9 +160,9 @@ parser.add_argument(
 
 parser.add_argument(
     "--ocr-engine",
-    choices=["auto", "rapidocr", "tesseract", "none", "fallback"],
-    default=None,
-    help="Select local OCR engine (auto, rapidocr, tesseract, none)",
+    choices=["auto", "rapidocr", "tesseract"],
+    default="auto",
+    help="Select local OCR engine (auto, rapidocr, tesseract)",
 )
 
 parser.add_argument(
