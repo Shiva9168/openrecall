@@ -1495,8 +1495,25 @@ def main():
             sys.exit(1)
 
     if getattr(args, "migrate", False):
-        from openrecall.database import migrate_legacy_database
+        from openrecall.database import (
+            DatabaseState,
+            detect_database_state,
+            migrate_legacy_database,
+            resolve_database_path,
+        )
         try:
+            db_file_path = resolve_database_path(target_storage_path)
+            pre_state = detect_database_state(target_storage_path)
+
+            if pre_state == DatabaseState.CURRENT:
+                msg = (
+                    f"Database at {db_file_path} is already current (v3); no migration required.\n\n"
+                    "No migration was performed."
+                )
+                print(msg)
+                logger.info(f"Database at {db_file_path} is already current; no migration performed.")
+                sys.exit(0)
+
             migrated_path = migrate_legacy_database(target_storage_path)
             print(f"Successfully migrated legacy database at {migrated_path} to current schema.")
             logger.info(f"Successfully migrated legacy database at {migrated_path} to current schema.")
@@ -1518,6 +1535,8 @@ def main():
             logger.warning(f"FreeConsole execution warning: {e}")
 
     import threading
+    from openrecall.database import LegacyDatabaseMigrationRequiredError, resolve_database_path
+
     pipeline = None
     maintenance_worker = None
     instance_lock = None
@@ -1553,7 +1572,7 @@ def main():
                 pass
 
     try:
-        create_db()
+        create_db(target_storage_path)
 
         # 1. Single-instance lock and duplicate startup check
         lock_file = os.path.join(appdata_folder, "openrecall.lock")
@@ -1634,6 +1653,21 @@ def main():
 
         logger.info("Running Flask web server on port 8082")
         app.run(port=8082)
+    except LegacyDatabaseMigrationRequiredError:
+        resolved_db_path = resolve_database_path(target_storage_path)
+        path_flag = f' --storage-path "{target_storage_path}"' if target_storage_path else ""
+        msg = (
+            f"An older OpenRecall database was detected at {resolved_db_path}.\n"
+            "Normal startup does not automatically migrate legacy databases, and your existing database has not been modified.\n"
+            "Explicit migration is required to upgrade to the current schema.\n\n"
+            "To migrate your database, run:\n"
+            f"    openrecall{path_flag} --migrate\n\n"
+            "To inspect your legacy database and screenshots first, run:\n"
+            f"    openrecall{path_flag} --audit-legacy-storage"
+        )
+        print(msg, file=sys.stderr)
+        logger.warning(f"Legacy database detected requiring explicit migration: {resolved_db_path}")
+        sys.exit(1)
     except (KeyboardInterrupt, SystemExit) as exit_evt:
         code = getattr(exit_evt, "code", 0)
         if code in (0, None):

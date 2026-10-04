@@ -1,4 +1,5 @@
 import os
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -184,6 +185,105 @@ class TestDatabasePhase1C(unittest.TestCase):
                     os.remove(legacy_db)
                 except Exception:
                     pass
+
+    def test_legacy_database_normal_startup_friendly_message(self):
+        """Test A: Normal startup on legacy DB shows friendly migration message, no traceback, exits with status 1."""
+        from unittest.mock import patch
+        from io import StringIO
+        from openrecall.app import main
+        from openrecall.config import parser
+
+        temp_dir = tempfile.mkdtemp(prefix="test_legacy_startup_")
+        legacy_db = os.path.join(temp_dir, "recall.db")
+        try:
+            with sqlite3.connect(legacy_db) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """CREATE TABLE entries (
+                           id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           app TEXT,
+                           title TEXT,
+                           text TEXT,
+                           timestamp INTEGER UNIQUE,
+                           embedding BLOB
+                       )"""
+                )
+                cursor.execute("PRAGMA user_version = 1")
+                conn.commit()
+
+            parsed_args = parser.parse_args(["--storage-path", temp_dir])
+
+            stderr_buf = StringIO()
+            with patch("openrecall.config.args", parsed_args), \
+                 patch("sys.stderr", stderr_buf):
+                with self.assertRaises(SystemExit) as cm:
+                    main()
+
+                # Verify exit code 1
+                self.assertEqual(cm.exception.code, 1)
+
+            err_msg = stderr_buf.getvalue()
+            # Assert friendly message requirements
+            self.assertIn("An older OpenRecall database was detected", err_msg)
+            self.assertIn("Normal startup does not automatically migrate", err_msg)
+            self.assertIn("openrecall", err_msg)
+            self.assertIn("--migrate", err_msg)
+            self.assertIn("--audit-legacy-storage", err_msg)
+
+            # DB remains untouched in v1
+            self.assertEqual(get_schema_version(legacy_db), 1)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_already_current_database_migrate_messaging(self):
+        """Test B: Running --migrate on v3 database reports already current, no migration performed, exits 0, no 'Successfully migrated' text."""
+        from unittest.mock import patch
+        from io import StringIO
+        from openrecall.app import main
+        from openrecall.config import parser
+
+        temp_dir = tempfile.mkdtemp(prefix="test_current_migrate_")
+        current_db = os.path.join(temp_dir, "recall.db")
+        try:
+            create_db(current_db)
+            self.assertEqual(get_schema_version(current_db), 3)
+
+            parsed_args = parser.parse_args(["--storage-path", temp_dir, "--migrate"])
+
+            stdout_buf = StringIO()
+            with patch("openrecall.config.args", parsed_args), \
+                 patch("sys.stdout", stdout_buf):
+                with self.assertRaises(SystemExit) as cm:
+                    main()
+
+                # Verify exit code 0
+                self.assertEqual(cm.exception.code, 0)
+
+            out_msg = stdout_buf.getvalue()
+            self.assertIn("already current (v3); no migration required", out_msg)
+            self.assertIn("No migration was performed", out_msg)
+            self.assertNotIn("Successfully migrated", out_msg)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_unsupported_schema_rejected(self):
+        """Test D: Unsupported / altered schema remains strictly rejected."""
+        from openrecall.database import UnsupportedDatabaseSchemaError, detect_database_state, DatabaseState, migrate_legacy_database
+        temp_dir = tempfile.mkdtemp(prefix="test_unsupported_schema_")
+        bad_db = os.path.join(temp_dir, "recall.db")
+        try:
+            with sqlite3.connect(bad_db) as conn:
+                cursor = conn.cursor()
+                cursor.execute("CREATE TABLE unknown_table (col1 TEXT)")
+                cursor.execute("PRAGMA user_version = 99")
+                conn.commit()
+
+            self.assertEqual(detect_database_state(bad_db), DatabaseState.UNKNOWN)
+
+            with self.assertRaises(UnsupportedDatabaseSchemaError):
+                migrate_legacy_database(bad_db)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def test_sanitize_fts5_query_helper(self):
         """Test query sanitization for safe FTS5 execution."""
