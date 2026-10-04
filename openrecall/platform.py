@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import mss
 import numpy as np
@@ -100,7 +100,11 @@ class StartupIntegrationProvider(abc.ABC):
     """Abstract provider for OS startup registration."""
 
     @abc.abstractmethod
-    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
+    def enable_startup(
+        self,
+        storage_path: Optional[str] = None,
+        parsed_args: Optional[Any] = None,
+    ) -> bool:
         """Enables launching OpenRecall on system startup."""
         pass
 
@@ -310,11 +314,15 @@ def get_screen_capture_provider() -> ScreenCaptureProvider:
     return _screen_capture_provider_instance
 
 
-def _get_autostart_command(storage_path: Optional[str] = None) -> str:
+def _get_autostart_command(
+    storage_path: Optional[str] = None,
+    parsed_args: Optional[Any] = None,
+) -> str:
     """Helper function to resolve executable command for OS autostart registration.
 
     Guarantees a valid, fully resolved absolute executable path across system Python,
-    virtual environments, installed wheels, and editable/development installs.
+    virtual environments, installed wheels, and editable/development installs,
+    preserving explicit user-selected runtime configuration options.
     """
     import shutil
 
@@ -396,17 +404,42 @@ def _get_autostart_command(storage_path: Optional[str] = None) -> str:
             py_bin = os.path.abspath(sys.executable) if sys.executable else "python3"
             base_cmd = f'"{py_bin}" -m openrecall.app --background'
 
-    if storage_path is None:
+    if parsed_args is None:
         try:
-            from openrecall.config import args
-            if getattr(args, "storage_path", None):
-                storage_path = args.storage_path
+            from openrecall.config import args as config_args
+            parsed_args = config_args
         except Exception:
-            pass
+            parsed_args = None
+
+    if storage_path is None and parsed_args is not None:
+        storage_path = getattr(parsed_args, "storage_path", None)
 
     if storage_path:
         norm_path = os.path.abspath(os.path.expanduser(os.path.normpath(storage_path)))
         base_cmd += f' --storage-path "{norm_path}"'
+
+    if parsed_args is not None:
+        # OCR Configuration Options
+        disable_ocr = getattr(parsed_args, "disable_ocr", False)
+        if disable_ocr:
+            base_cmd += " --disable-ocr"
+        else:
+            ocr_engine = getattr(parsed_args, "ocr_engine", None)
+            if ocr_engine in ("rapidocr", "tesseract"):
+                base_cmd += f" --ocr-engine {ocr_engine}"
+
+            ocr_threads = getattr(parsed_args, "ocr_threads", None)
+            if ocr_threads is not None and ocr_threads > 0:
+                base_cmd += f" --ocr-threads {ocr_threads}"
+
+        # Capacity Retention Limit
+        max_storage_gb = getattr(parsed_args, "max_storage_gb", None)
+        if max_storage_gb is not None and max_storage_gb > 0:
+            base_cmd += f" --max-storage-gb {max_storage_gb}"
+
+        # Display Capture Options
+        if getattr(parsed_args, "primary_monitor_only", False):
+            base_cmd += " --primary-monitor-only"
 
     return base_cmd
 
@@ -436,12 +469,16 @@ class LinuxPlatformProvider(
         except Exception:
             return None
 
-    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
+    def enable_startup(
+        self,
+        storage_path: Optional[str] = None,
+        parsed_args: Optional[Any] = None,
+    ) -> bool:
         try:
             autostart_dir = os.path.expanduser("~/.config/autostart")
             os.makedirs(autostart_dir, exist_ok=True)
             desktop_file = os.path.join(autostart_dir, "openrecall.desktop")
-            cmd = _get_autostart_command(storage_path=storage_path)
+            cmd = _get_autostart_command(storage_path=storage_path, parsed_args=parsed_args)
             with open(desktop_file, "w") as f:
                 f.write(
                     "[Desktop Entry]\n"
@@ -577,7 +614,11 @@ class WindowsPlatformProvider(
         except Exception:
             return None
 
-    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
+    def enable_startup(
+        self,
+        storage_path: Optional[str] = None,
+        parsed_args: Optional[Any] = None,
+    ) -> bool:
         try:
             import winreg
 
@@ -587,7 +628,7 @@ class WindowsPlatformProvider(
                 0,
                 winreg.KEY_SET_VALUE,
             )
-            cmd = _get_autostart_command(storage_path=storage_path)
+            cmd = _get_autostart_command(storage_path=storage_path, parsed_args=parsed_args)
             winreg.SetValueEx(key, "OpenRecall", 0, winreg.REG_SZ, cmd)
             winreg.CloseKey(key)
             return True
@@ -686,14 +727,18 @@ class MacOSPlatformProvider(
             pass
         return None
 
-    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
+    def enable_startup(
+        self,
+        storage_path: Optional[str] = None,
+        parsed_args: Optional[Any] = None,
+    ) -> bool:
         try:
             plist_path = self._get_launchagent_path()
             dir_name = os.path.dirname(plist_path)
             if not os.path.exists(dir_name):
                 os.makedirs(dir_name, exist_ok=True)
 
-            cmd = _get_autostart_command(storage_path=storage_path)
+            cmd = _get_autostart_command(storage_path=storage_path, parsed_args=parsed_args)
             import shlex
 
             program_args = shlex.split(cmd)
@@ -758,7 +803,11 @@ class FallbackPlatformProvider(
     def get_idle_seconds(self) -> Optional[float]:
         return 0.0
 
-    def enable_startup(self, storage_path: Optional[str] = None) -> bool:
+    def enable_startup(
+        self,
+        storage_path: Optional[str] = None,
+        parsed_args: Optional[Any] = None,
+    ) -> bool:
         return False
 
     def disable_startup(self) -> bool:

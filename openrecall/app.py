@@ -230,13 +230,13 @@ base_template = """
     <div class="fixed inset-0" onclick="toggleAutostartInfo()"></div>
     <div class="relative bg-white border border-slate-200/90 rounded-xl shadow-xl max-w-md w-full p-5 space-y-4 text-xs text-slate-600 z-10">
       <div class="flex items-center justify-between border-b border-slate-100 pb-3">
-        <h3 class="font-bold text-slate-900 text-sm">Autostart</h3>
+        <h3 class="font-bold text-slate-900 text-sm">Automatic Startup</h3>
         <button type="button" onclick="toggleAutostartInfo()" class="text-slate-400 hover:text-slate-600 font-medium text-base leading-none cursor-pointer p-1 rounded hover:bg-slate-100 transition-colors" aria-label="Close modal">&times;</button>
       </div>
 
-      <div class="space-y-3">
+      <div class="space-y-3.5">
         <p class="text-slate-600 leading-relaxed text-xs">
-          Start OpenRecall automatically when you sign in to your computer.
+          Start OpenRecall automatically when you sign in to your computer. Explicit runtime options supplied when enabling autostart are persisted directly into your system startup configuration.
         </p>
 
         <div class="flex items-center justify-between bg-slate-50 px-3 py-2 rounded-lg border border-slate-200/70 text-xs">
@@ -244,26 +244,57 @@ base_template = """
           {% if autostart_enabled %}
             <span class="inline-flex items-center gap-1.5 font-semibold text-emerald-700">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-              <span>Enabled</span>
+              <span>Active</span>
             </span>
           {% else %}
             <span class="inline-flex items-center gap-1.5 font-medium text-slate-500">
               <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-              <span>Disabled</span>
+              <span>Inactive</span>
             </span>
           {% endif %}
         </div>
 
-        <div class="bg-slate-900 text-slate-200 rounded-lg p-3 space-y-2.5 font-mono text-[11px] border border-slate-800">
+        <!-- Command Blocks -->
+        <div class="space-y-2.5">
           <div>
-            <div class="font-sans text-[11px] text-slate-400 font-medium mb-1">Enable</div>
-            <code class="text-indigo-300 bg-slate-800/80 px-2 py-1 rounded block select-all">openrecall --enable-autostart</code>
+            <div class="text-[11px] font-semibold text-slate-700 mb-1">Enable (Default)</div>
+            <div class="bg-slate-900 text-slate-200 rounded-lg px-3 py-2 border border-slate-800 flex items-center justify-between group">
+              <code class="font-mono text-[11px] text-indigo-300 select-all">openrecall --enable-autostart</code>
+              <button type="button" onclick="navigator.clipboard.writeText('openrecall --enable-autostart')" class="text-slate-400 hover:text-slate-200 text-[10px] font-sans px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 transition-colors cursor-pointer" title="Copy command">Copy</button>
+            </div>
           </div>
+
           <div>
-            <div class="font-sans text-[11px] text-slate-400 font-medium mb-1">Disable</div>
-            <code class="text-slate-300 bg-slate-800/80 px-2 py-1 rounded block select-all">openrecall --disable-autostart</code>
+            <div class="text-[11px] font-semibold text-slate-700 mb-1">Disable</div>
+            <div class="bg-slate-900 text-slate-200 rounded-lg px-3 py-2 border border-slate-800 flex items-center justify-between group">
+              <code class="font-mono text-[11px] text-slate-300 select-all">openrecall --disable-autostart</code>
+              <button type="button" onclick="navigator.clipboard.writeText('openrecall --disable-autostart')" class="text-slate-400 hover:text-slate-200 text-[10px] font-sans px-1.5 py-0.5 rounded bg-slate-800 hover:bg-slate-700 transition-colors cursor-pointer" title="Copy command">Copy</button>
+            </div>
           </div>
         </div>
+
+        <!-- Syntax Line -->
+        <div>
+          <div class="text-[11px] font-semibold text-slate-700 mb-1">Custom Options Syntax</div>
+          <code class="font-mono text-[11px] text-slate-800 bg-slate-100 border border-slate-200/80 px-2.5 py-1.5 rounded block select-all">openrecall --enable-autostart [--args]</code>
+        </div>
+
+        <!-- Supported Options Box -->
+        <div class="bg-slate-50 border border-slate-200/80 rounded-lg p-3 space-y-1.5">
+          <div class="text-[11px] font-semibold text-slate-700">Supported Options</div>
+          <div class="font-mono text-[10.5px] text-slate-600 space-y-0.5 leading-relaxed">
+            <div>[--storage-path &lt;path&gt;]</div>
+            <div>[--ocr-engine &lt;rapidocr|tesseract&gt;]</div>
+            <div>[--ocr-threads &lt;n&gt;]</div>
+            <div>[--disable-ocr]</div>
+            <div>[--max-storage-gb &lt;gb&gt;]</div>
+            <div>[--primary-monitor-only]</div>
+          </div>
+        </div>
+
+        <p class="text-[11px] text-slate-500 leading-normal italic">
+          Re-running <code class="font-mono text-[10.5px] text-slate-700 bg-slate-100 px-1 py-0.5 rounded">--enable-autostart</code> replaces previous autostart settings. Running without custom options resets autostart to default.
+        </p>
       </div>
 
       <div class="pt-2 flex justify-end border-t border-slate-100">
@@ -1582,7 +1613,7 @@ def main():
 
         if not instance_lock.acquire() or check_existing_instance_running(port=8082):
             if getattr(args, "enable_autostart", False):
-                if get_platform_provider().enable_startup(storage_path=target_storage_path):
+                if get_platform_provider().enable_startup(storage_path=target_storage_path, parsed_args=args):
                     print("Successfully enabled system autostart.")
                     logger.info("Successfully enabled system autostart.")
                 else:
@@ -1605,7 +1636,7 @@ def main():
         print(f"Appdata folder: {appdata_folder}")
 
         if getattr(args, "enable_autostart", False):
-            if get_platform_provider().enable_startup(storage_path=target_storage_path):
+            if get_platform_provider().enable_startup(storage_path=target_storage_path, parsed_args=args):
                 print("Successfully enabled system autostart.")
                 logger.info("Successfully enabled system autostart.")
             else:

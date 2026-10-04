@@ -94,26 +94,42 @@ def parse_max_storage_gb(gb_val: Optional[float]) -> int:
     return int(gb_val * 1_000_000_000)
 
 
-parser = argparse.ArgumentParser(description="OpenRecall")
+class OpenRecallHelpFormatter(argparse.HelpFormatter):
+    """Custom help formatter providing clean spacing and vertical breathing room between options."""
+
+    def __init__(self, prog):
+        super().__init__(prog, max_help_position=42, width=120)
+
+    def _format_action(self, action):
+        result = super()._format_action(action)
+        if result and not result.endswith("\n\n"):
+            result += "\n"
+        return result
+
+
+parser = argparse.ArgumentParser(
+    formatter_class=OpenRecallHelpFormatter,
+)
+parser._optionals.title = "Options"
 
 parser.add_argument(
     "--storage-path",
     default=None,
-    help="Path to store the screenshots and database",
+    help="Path to store screenshots and database",
 )
 
 parser.add_argument(
     "--migrate",
     action="store_true",
     default=False,
-    help="Migrate a legacy OpenRecall database to the current schema",
+    help="Migrate a legacy OpenRecall database to current schema",
 )
 
 parser.add_argument(
     "--audit-legacy-storage",
     action="store_true",
     default=False,
-    help="Perform a read-only audit of legacy database and screenshot storage",
+    help="Perform a read-only audit of legacy storage",
 )
 
 parser.add_argument(
@@ -127,14 +143,14 @@ parser.add_argument(
     "--max-storage-gb",
     type=float,
     default=None,
-    help="Maximum referenced screenshot storage limit in Gigabytes (e.g. 5.0). Default is 0 (disabled).",
+    help="Maximum screenshot storage limit in GB (e.g. 5.0, default: 0 / unlimited)",
 )
 
 parser.add_argument(
     "--enable-autostart",
     action="store_true",
     default=False,
-    help="Enable automatic startup on system boot",
+    help="Enable automatic startup on system boot (persists explicit runtime options)",
 )
 
 parser.add_argument(
@@ -179,9 +195,23 @@ parser.add_argument(
     help="Disable local OCR text extraction completely",
 )
 
+_original_parse_args = parser.parse_args
+
+def _parse_args_with_validation(args=None, namespace=None):
+    parsed = _original_parse_args(args=args, namespace=namespace)
+    if getattr(parsed, "disable_ocr", False):
+        if getattr(parsed, "ocr_engine", "auto") in ("rapidocr", "tesseract") or getattr(parsed, "ocr_threads", None) is not None:
+            parser.error("Cannot combine --disable-ocr with --ocr-engine or --ocr-threads.")
+    return parsed
+
+parser.parse_args = _parse_args_with_validation
+
 # Parse args safely with fallback when imported in test runners
 try:
     args, _ = parser.parse_known_args()
+    if getattr(args, "disable_ocr", False):
+        if getattr(args, "ocr_engine", "auto") in ("rapidocr", "tesseract") or getattr(args, "ocr_threads", None) is not None:
+            parser.error("Cannot combine --disable-ocr with --ocr-engine or --ocr-threads.")
 except Exception:
     args = parser.parse_args([])
 

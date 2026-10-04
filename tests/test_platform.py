@@ -169,6 +169,88 @@ class TestPlatformAbstractions(unittest.TestCase):
             self.assertTrue(linux_provider.disable_startup())
             mock_remove.assert_called_once()
 
+    def test_autostart_command_persistence_options(self):
+        """Test Phase 13.9 persistent autostart runtime options generation."""
+        from openrecall.platform import _get_autostart_command
+        from openrecall.config import parser
+
+        # 1. Default invocation (no extra flags)
+        args_default = parser.parse_args([])
+        cmd_def = _get_autostart_command(parsed_args=args_default)
+        self.assertIn("--background", cmd_def)
+        self.assertNotIn("--disable-ocr", cmd_def)
+        self.assertNotIn("--ocr-engine", cmd_def)
+
+        # 2. Storage path persistence with spaces
+        custom_path = "/data/my custom openrecall/path"
+        args_storage = parser.parse_args(["--storage-path", custom_path])
+        cmd_storage = _get_autostart_command(storage_path=custom_path, parsed_args=args_storage)
+        self.assertIn(f'--storage-path "{os.path.abspath(custom_path)}"', cmd_storage)
+
+        # 3. Disable OCR persistence
+        args_no_ocr = parser.parse_args(["--disable-ocr"])
+        cmd_no_ocr = _get_autostart_command(parsed_args=args_no_ocr)
+        self.assertIn("--disable-ocr", cmd_no_ocr)
+
+        # 4. OCR Engine RapidOCR
+        args_rapid = parser.parse_args(["--ocr-engine", "rapidocr"])
+        cmd_rapid = _get_autostart_command(parsed_args=args_rapid)
+        self.assertIn("--ocr-engine rapidocr", cmd_rapid)
+
+        # 5. OCR Engine Tesseract
+        args_tess = parser.parse_args(["--ocr-engine", "tesseract"])
+        cmd_tess = _get_autostart_command(parsed_args=args_tess)
+        self.assertIn("--ocr-engine tesseract", cmd_tess)
+
+        # 6. OCR Threads
+        args_threads = parser.parse_args(["--ocr-engine", "rapidocr", "--ocr-threads", "2"])
+        cmd_threads = _get_autostart_command(parsed_args=args_threads)
+        self.assertIn("--ocr-engine rapidocr", cmd_threads)
+        self.assertIn("--ocr-threads 2", cmd_threads)
+
+        # 7. Combined options: Storage + Max Storage GB + Primary Monitor Only
+        args_combined = parser.parse_args([
+            "--storage-path", custom_path,
+            "--max-storage-gb", "5.0",
+            "--primary-monitor-only",
+        ])
+        cmd_combined = _get_autostart_command(storage_path=custom_path, parsed_args=args_combined)
+        self.assertIn(f'--storage-path "{os.path.abspath(custom_path)}"', cmd_combined)
+        self.assertIn("--max-storage-gb 5.0", cmd_combined)
+        self.assertIn("--primary-monitor-only", cmd_combined)
+
+    def test_autostart_command_update_and_reset_semantics(self):
+        """Test Phase 13.9 autostart update and reset replacement semantics."""
+        from openrecall.platform import _get_autostart_command
+        from openrecall.config import parser
+
+        # Step 1: Configure autostart with --disable-ocr
+        args_step1 = parser.parse_args(["--disable-ocr"])
+        cmd1 = _get_autostart_command(parsed_args=args_step1)
+        self.assertIn("--disable-ocr", cmd1)
+
+        # Step 2: Update autostart with --ocr-engine rapidocr (replaces --disable-ocr)
+        args_step2 = parser.parse_args(["--ocr-engine", "rapidocr"])
+        cmd2 = _get_autostart_command(parsed_args=args_step2)
+        self.assertIn("--ocr-engine rapidocr", cmd2)
+        self.assertNotIn("--disable-ocr", cmd2)
+
+        # Step 3: Reset autostart with default openrecall (replaces --ocr-engine rapidocr)
+        args_step3 = parser.parse_args([])
+        cmd3 = _get_autostart_command(parsed_args=args_step3)
+        self.assertNotIn("--ocr-engine", cmd3)
+        self.assertNotIn("--disable-ocr", cmd3)
+
+    def test_conflicting_ocr_options_rejected(self):
+        """Test Phase 13.9 CLI rejection of conflicting OCR options."""
+        from openrecall.config import parser
+        with patch("sys.stderr", MagicMock()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["--disable-ocr", "--ocr-engine", "rapidocr"])
+
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["--disable-ocr", "--ocr-threads", "2"])
+
     def test_is_frame_valid(self):
         self.assertFalse(is_frame_valid(None))
         self.assertFalse(is_frame_valid("invalid"))
