@@ -173,8 +173,9 @@ openrecall --audit-legacy-storage --storage-path /path/to/legacy_dir
 openrecall --migrate --storage-path /path/to/legacy_dir
 ```
 
-- **Preservation Copy**: Generates a SHA-256 verified backup copy (`recall_legacy_v0_<timestamp>.db`) before modifying data.
+- **Preservation Copy**: Generates a SHA-256 verified backup copy (`recall-legacy.db`) before modifying data.
 - **Idempotent**: Running `--migrate` on a current v3 database safely outputs a no-op message.
+- For detailed technical instructions and safety procedures, see the [Legacy Database Migration Guide](docs/migration.md).
 
 ---
 
@@ -194,6 +195,7 @@ This repository represents the **v0.9.0 overhaul release-preparation stage** of 
 For additional documentation:
 - [DEVELOPMENT.md](DEVELOPMENT.md) — Contributor guide, codebase architecture, and testing procedures.
 - [ROADMAP.md](ROADMAP.md) — Major development phase history and project roadmap.
+- [docs/migration.md](docs/migration.md) — Guide for legacy database audit, backup, and migration.
 - [docs/encryption.md](docs/encryption.md) — Guide for running OpenRecall on encrypted storage (BitLocker, LUKS, macOS encrypted disk image).
 
 ---
