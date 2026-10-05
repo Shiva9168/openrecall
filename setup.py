@@ -32,7 +32,7 @@ elif current_os == "darwin":
 
 setup(
     name="OpenRecall",
-    version="0.8.0",
+    version="0.9.0",
     packages=find_packages(),
     package_data={"openrecall": ["static/*", "static/**/*"]},
     include_package_data=True,
