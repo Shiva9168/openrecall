@@ -6,64 +6,101 @@
 \____/ .___/\___/_/ /_/_/ |_|\___/\___/\__,_/_/_/      
     /_/                                                                                                                         
 ```
-**Enjoy this project?** Show your support by starring it! ⭐️ Thank you!
 
-Join our [Discord](https://discord.gg/RzvCYRgUkx) and/or [Telegram](https://t.me/+5DULWTesqUYwYjY0) community to stay informed of updates!
+# OpenRecall — Take Control of Your Digital Memory
 
-# Take Control of Your Digital Memory
+OpenRecall is a local, privacy-first desktop memory assistant. It captures desktop screen activity locally, analyzes text and images using built-in OCR engines, indexes screen history into a local SQLite database with full-text search (FTS5), and provides an interactive time-travel timeline and gallery grid via a local Flask Web UI.
 
-OpenRecall is a fully open-source, privacy-first alternative to proprietary solutions like Microsoft's Windows Recall or Limitless' Rewind.ai. With OpenRecall, you can easily access your digital history, enhancing your memory and productivity without compromising your privacy.
+> **Project Lineage & Attribution**: This repository is an extensive, independent overhaul of the original [OpenRecall project](https://github.com/openrecall/openrecall) originally created by the OpenRecall contributors. It is released under the GNU Affero General Public License v3.0 (AGPLv3). The original OpenRecall authors are not affiliated with, do not maintain, and do not endorse this overhaul repository.
 
-## What does it do?
+---
 
-OpenRecall captures your digital history through regularly taken snapshots (screenshots). The text and images within these screenshots are analyzed locally and made searchable, allowing you to quickly find specific information by typing relevant keywords into OpenRecall. You can also manually scroll back through your timeline history to revisit past activities.
+## Free & Open Source
 
-https://github.com/openrecall/openrecall/assets/16676419/cfc579cb-165b-43e4-9325-9160da6487d2
+OpenRecall is **100% free to use and open source**. The full source code is publicly available under the GNU Affero General Public License v3.0 (AGPLv3).
 
-## Why Choose OpenRecall?
+---
 
-OpenRecall offers several key advantages over closed-source alternatives:
+## What Does It Do?
 
-- **Transparency**: OpenRecall is 100% open-source, allowing you to audit the source code for potential backdoors or privacy-invading features.
-- **Cross-platform Support**: OpenRecall works on Windows, macOS, and Linux, giving you the freedom to use it on your preferred operating system.
-- **Privacy-focused & Offline-First**: Your data is stored locally on your device; no internet connection or cloud service is required.
-- **Hardware Compatibility**: OpenRecall is optimized for low-end hardware (~2 GB RAM, CPU-only, no dedicated GPU needed).
+OpenRecall captures periodic snapshots of your desktop activity. Extracted text and image metadata are indexed locally, allowing you to:
+- **Search Past Activity**: Instantly locate past documents, code snippets, web pages, or conversations using full-text search.
+- **Scrub Through Time**: Interactively navigate back through visual desktop history using a debounced timeline slider or paginated gallery grid.
+- **Control Privacy**: Pause and resume capture instantly via UI buttons or local REST API endpoints (`/api/pause`, `/api/resume`).
 
-## Features
+---
 
-- **Time Travel Timeline**: Revisit and explore your past digital activities seamlessly across Windows, macOS, or Linux.
-- **Local-First Search**: Advanced local OCR interprets your history, providing fast full-text FTS5 search capabilities.
-- **Pause & Resume Privacy Controls**: Easily pause and resume screen capture directly from the local Web UI or REST API (`/api/pause`, `/api/resume`).
-- **Full Control Over Storage**: Your data is stored locally with automatic background storage maintenance and capacity management.
+## Overhaul Highlights
 
-## Platform & Operating System Support
+- **100% Local & Offline**: All screen capture, frame change detection, OCR, SQLite indexing, and Web UI serving run locally on your machine. Zero cloud APIs, zero telemetry, zero analytics, and zero external network calls.
+- **Built-in Local OCR**: Uses **RapidOCR** (ONNX Runtime CPU inference) as the primary OCR engine with zero external system dependencies. Supports system **Tesseract** as an alternative fallback.
+- **Fast Full-Text Search (FTS5)**: Search indexed OCR text and active window titles instantly via SQLite FTS5.
+- **Timeline & Gallery Views**: Scrub through history with a 100ms debounced slider or view paginated screenshot cards in Gallery Mode (`/?mode=gallery`).
+- **Storage Cap Management**: Set storage limits (e.g. `--max-storage-gb 5.0`) to automatically trim the oldest screenshots when storage thresholds are reached.
+- **Persistent System Autostart**: Enable automatic system startup on boot (`--enable-autostart`) with automatic serialization of explicit runtime flags across Windows Registry, Linux XDG Autostart, and macOS LaunchAgent.
+- **Legacy Database Migration**: Automated schema v0 → v3 migration tooling (`openrecall --migrate`, `--audit-legacy-storage`) with SHA-256 preservation copies.
 
-OpenRecall is built using modular platform abstraction providers:
+---
 
-- **Linux (X11)**: Fully supported. Automatic screen capture, multi-monitor enumeration, active application name, window title tracking via `xprop`, and autostart via XDG (`~/.config/autostart`).
-- **Linux (Wayland)**: Supported natively via XDG Desktop Portal ScreenCast and PipeWire continuous streaming (`WaylandScreenCastCaptureProvider`). First-time use requires granting screen sharing permission in the OS dialog; session restoration tokens persist locally across system reboots. Active application name and window title tracking degrade gracefully under Wayland security boundaries.
-- **Windows (10 / 11)**: Supported. Multi-monitor GDI screen capture, active window title and process tracking via `pywin32`, and autostart via Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`).
-- **macOS**: Supported. Multi-monitor Quartz screen capture, active application and window title tracking via `pyobjc`, and autostart via LaunchAgent (`~/Library/LaunchAgents/com.openrecall.app.plist`). *Note*: macOS 10.15+ requires granting Screen Recording permission in System Settings.
+## Platform Support Matrix
 
-### Offline & Local-First Operation
-OpenRecall is 100% offline-first. All OCR, frame diffing, SQLite search, and Web UI styling operate locally on your machine without external CDN network dependencies or cloud API calls.
+OpenRecall uses modular platform abstraction providers across major desktop environments:
 
-### Optional Local OCR (Tesseract)
-Tesseract OCR is an optional system dependency. If installed and present on your system `PATH`, OpenRecall automatically extracts text from captures. If Tesseract is not installed, OpenRecall degrades gracefully and continues recording visual history without text extraction.
+| Platform / Display Server | Status | Details |
+| :--- | :--- | :--- |
+| **Windows 10 x64** | **Physically Validated** | Win32 GDI display capture, process title tracking via `pywin32`, Registry autostart. |
+| **Ubuntu Wayland** | **Physically Validated** | Native XDG Desktop Portal ScreenCast & PipeWire continuous streaming capture provider (`WaylandScreenCastCaptureProvider`), persistent session restoration tokens, XDG Autostart. Title tracking degrades gracefully under Wayland security boundaries. |
+| **Linux Mint X11** | **Physically Validated** | Multi-monitor X11 capture via `mss`, window title tracking via `xprop`, XDG Autostart. |
+| **Windows 11** | **Compatibility Reviewed** | Code & packaging compatibility reviewed; physical runtime validation not performed. |
+| **macOS (Quartz)** | **Compatibility Reviewed** | Quartz screen capture via `mss`, window tracking via `pyobjc`, LaunchAgent autostart. Code & packaging compatibility reviewed; physical runtime validation not performed. |
 
-## Get Started
+---
+
+## Hardware & Resource Guidelines
+
+OpenRecall is designed and optimized with low-resource, CPU-only systems in mind.
+- **4 GB RAM is a practical recommended baseline** for running the application comfortably alongside everyday desktop applications.
+- **Note**: 4 GB RAM is a practical guideline, not a hard minimum requirement or a performance guarantee. Actual resource consumption depends on operating system overhead, display resolution, capture frequency, OCR engine selection, and active workload.
+
+---
+
+## Installation & Setup
 
 ### Prerequisites
-- Python 3.9+
-- Linux, Windows 10/11, or macOS
-- Tesseract OCR (Optional)
+- **Python**: 3.9 or higher
+- **Supported OS**: Windows 10/11, Linux (X11 or Wayland), or macOS
 
-To install:
+### Release Installation
+
+To install OpenRecall from the built release package (`.whl`):
 ```bash
-python3 -m pip install --upgrade openrecall
+python3 -m pip install openrecall-0.9.0-py3-none-any.whl
 ```
 
-To run:
+### Development Setup
+
+To clone the repository for development or build from source:
+```bash
+git clone https://github.com/Shiva9168/openrecall.git
+cd openrecall
+uv pip install -e ".[dev]"
+```
+For detailed developer instructions, see [DEVELOPMENT.md](DEVELOPMENT.md).
+
+### Uninstall
+
+To uninstall OpenRecall:
+```bash
+python3 -m pip uninstall openrecall
+```
+
+> **Note on Data Privacy**: Uninstalling the Python package removes the application binaries, but does **not** automatically delete your captured screen history, SQLite database, or screenshots storage directory (`recall.db`, appdata folder). Captured data remains safely on disk and must be manually removed by the user if deletion is desired.
+
+---
+
+## Quick Start
+
+To launch OpenRecall:
 ```bash
 openrecall
 ```
@@ -71,72 +108,104 @@ or:
 ```bash
 python3 -m openrecall.app
 ```
-Open your browser to [http://localhost:8082](http://localhost:8082) to access the OpenRecall Web UI.
 
-## Command-Line Arguments
+Open your browser to [http://localhost:8082](http://localhost:8082) to access the local Web UI. All requests bind strictly to `127.0.0.1:8082`.
 
-- `--storage-path`: Custom directory path to store screenshots and database (`recall.db`). Default is the user data path for your OS:
-  - Linux: `~/.local/share/openrecall`
-  - Windows: `%APPDATA%\openrecall`
-  - macOS: `~/Library/Application Support/openrecall`
-- `--primary-monitor-only` (default: `False`): Only record the primary monitor (rather than individual screenshots for all connected monitors).
-- `--max-storage-gb` (default: `0` / disabled): Maximum referenced screenshot storage capacity limit in Gigabytes (e.g. `--max-storage-gb 5.0`). When set, OpenRecall automatically trims the oldest screenshots when storage exceeds the threshold.
-- `--enable-autostart` (default: `False`): Explicitly registers per-user autostart for OpenRecall on system boot (Windows Registry, Linux XDG autostart, or macOS LaunchAgent).
-- `--disable-autostart` (default: `False`): Explicitly removes per-user autostart registration for OpenRecall.
+---
 
-## Local Web UI & REST API Controls
+## Command-Line Reference
 
-The OpenRecall Web UI at `http://localhost:8082` includes:
-- **Time Travel Timeline Slider**: Interactive horizontal range slider to scrub through desktop visual history with 100ms debounced single-image rendering.
-- **Gallery Grid Mode**: Alternate view mode accessible via top navigation toggle (`/?mode=gallery`) presenting a paginated grid of captures.
-- **Status Indicator**: Displays whether recording is `Active` or `Paused` in the navigation header.
-- **Pause / Resume Controls**: Toggle background capture on or off directly via UI buttons or local POST requests:
-  - `POST /api/pause`: Pauses screen capture recording (default interval: 10 seconds).
-  - `POST /api/resume`: Resumes screen capture recording.
-- **REST API Endpoints**:
-  - `GET /api/timeline/bounds`: Returns JSON timeline bounds (`earliest_ts`, `latest_ts`, `total_count`).
-  - `GET /api/timeline/at?timestamp=X`: Returns JSON capture record nearest to timestamp `X`.
-  - `GET /screenshot/<filename>`: Multi-root screenshot image endpoint.
+OpenRecall provides comprehensive command-line configuration options:
 
-## Troubleshooting
+| Flag | Description | Default |
+| :--- | :--- | :--- |
+| `--storage-path PATH` | Custom directory path for screenshots and database (`recall.db`). | OS AppData path |
+| `--ocr-engine {auto,rapidocr,tesseract}` | Select local OCR engine (`auto` tries RapidOCR, then Tesseract, then Fallback). | `auto` |
+| `--ocr-threads N` | Number of CPU threads for RapidOCR inference. | Auto |
+| `--disable-ocr` | Disable local OCR text extraction completely. | `False` |
+| `--max-storage-gb GB` | Storage cap limit in Gigabytes (e.g. `5.0`). Automatically trims oldest screenshots. | `None` (0 / unlimited) |
+| `--primary-monitor-only` | Record primary display only (rather than all connected displays). | `False` |
+| `--enable-autostart` | Enable automatic system startup on boot (persists explicit runtime options). | `False` |
+| `--disable-autostart` | Disable automatic system startup on boot. | `False` |
+| `--background` | Run silently in the background without a console window. | `False` |
+| `--stop` | Stop running background OpenRecall instance gracefully. | `False` |
+| `--migrate` | Execute explicit schema v0 → v3 database migration. | `False` |
+| `--audit-legacy-storage` | Perform a read-only audit of legacy storage directory. | `False` |
 
-- **Local Log Diagnostics**: OpenRecall writes sparse, privacy-safe lifecycle and operational diagnostics to `<configured-storage-path>/log.txt` (automatically rotated up to 5 MB with 1 backup file `log.txt.1`).
-- **Tesseract OCR not detected**: Install Tesseract using your system package manager (`sudo apt install tesseract-ocr` on Ubuntu/Debian, `brew install tesseract` on macOS, or the installer on Windows). OpenRecall will automatically detect Tesseract on your `PATH`.
-- **Port 8082 already in use**: Ensure another instance of OpenRecall is not already running.
-- **Wayland Window Titles showing 'Untitled Window'**: Under pure Wayland sessions, Linux security policies prevent external process window title inspection. OpenRecall degrades gracefully and continues capturing visual screenshots.
+---
 
-## Uninstall Instructions
+## Local OCR Architecture
 
-To uninstall OpenRecall and remove all stored data:
+- **Primary Engine (RapidOCR)**: Integrated via `rapidocr` package using ONNX Runtime CPU inference. Operates locally with zero system binary dependencies. Images are capped at a 1440px maximum dimension before OCR processing.
+- **Alternative Engine (Tesseract)**: Secondary fallback engine used when `tesseract` is installed on system `PATH` and requested.
+- **Engine Selection (`--ocr-engine auto`)**: Tries RapidOCR first; if unavailable, tries Tesseract; if unavailable, falls back gracefully to a non-crashing fallback provider. Auto mode is availability/fallback based (it does not benchmark machine resources).
+- **CPU Thread Tuning**: Use `--ocr-threads N` to adjust CPU thread allocation for RapidOCR.
+- **Graceful Fallback**: Passing `--disable-ocr` skips OCR text extraction while screen capture continues recording visual history.
 
-1. Uninstall the package:
-   ```bash
-   python3 -m pip uninstall openrecall
-   ```
+---
 
-2. Remove stored data:
-   - On Windows:
-     ```cmd
-     rmdir /s %APPDATA%\openrecall
-     ```
-   - On macOS:
-     ```bash
-     rm -rf ~/Library/Application\ Support/openrecall
-     ```
-   - On Linux:
-     ```bash
-     rm -rf ~/.local/share/openrecall
-     ```
+## Autostart Integration & Persistent Options
 
-*Note*: If you specified a custom storage path using `--storage-path`, ensure you remove that directory as well.
+OpenRecall integrates natively with platform autostart mechanisms:
+- **Windows**: Registry Key (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\OpenRecall`)
+- **Linux**: XDG Autostart File (`~/.config/autostart/openrecall.desktop`)
+- **macOS**: LaunchAgent Plist (`~/Library/LaunchAgents/com.openrecall.app.plist`)
 
-## Contribute
+When enabling autostart with custom flags:
+```bash
+openrecall --enable-autostart --storage-path /custom/path --ocr-engine rapidocr --ocr-threads 2
+```
+Explicit runtime options (`--storage-path`, `--ocr-engine`, `--ocr-threads`, `--disable-ocr`, `--max-storage-gb`, `--primary-monitor-only`) are persisted into the system startup configuration. Re-running `--enable-autostart` replaces previous settings; running `--enable-autostart` without custom options resets autostart to default parameters. The autostart management commands themselves are not persisted; only the supported runtime options listed above are stored in the platform's startup configuration.
 
-As an open-source project, we welcome contributions from the community. If you'd like to help improve OpenRecall, please submit a pull request or open an issue on our GitHub repository.
+---
 
-## Contact the Maintainers
-mail@datatalk.be
+## Legacy Database Migration
 
-## License
+If you are upgrading from an older OpenRecall release (schema v0), OpenRecall detects legacy database structures on startup and stops normal startup until you explicitly run the migration command.
 
-OpenRecall is released under the [AGPLv3](https://opensource.org/licenses/AGPL-3.0), ensuring that it remains open and accessible to everyone.
+Before migrating, it is strongly recommended that you manually back up your legacy database/storage directory. OpenRecall also creates a SHA-256-verified preservation copy as part of the migration process.
+
+```bash
+# Perform a read-only audit of legacy storage:
+openrecall --audit-legacy-storage --storage-path /path/to/legacy_dir
+
+# Execute explicit schema migration (v0 -> v3):
+openrecall --migrate --storage-path /path/to/legacy_dir
+```
+
+- **Preservation Copy**: Generates a SHA-256 verified backup copy (`recall_legacy_v0_<timestamp>.db`) before modifying data.
+- **Idempotent**: Running `--migrate` on a current v3 database safely outputs a no-op message.
+
+---
+
+## Privacy & Security Guarantees
+
+- **100% Local Execution**: All processing, image downsampling, OCR text extraction, SQLite search, and Web UI serving occur on your device.
+- **Localhost Binding**: The web server binds strictly to `127.0.0.1:8082` (not exposed to LAN or external networks).
+- **Zero Telemetry**: No tracking, no analytics, no external update checks, and no remote cloud connections.
+- **Pause & Resume Controls**: Instantly pause or resume background screen capture via Web UI buttons or local REST POST requests (`/api/pause`, `/api/resume`).
+
+---
+
+## Project Status & Documentation
+
+This repository represents the **v0.9.0 overhaul release-preparation stage** of OpenRecall.
+
+For additional documentation:
+- [DEVELOPMENT.md](DEVELOPMENT.md) — Contributor guide, codebase architecture, and testing procedures.
+- [ROADMAP.md](ROADMAP.md) — Major development phase history and project roadmap.
+- [docs/encryption.md](docs/encryption.md) — Guide for running OpenRecall on encrypted storage (BitLocker, LUKS, macOS encrypted disk image).
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read [DEVELOPMENT.md](DEVELOPMENT.md) for details on setting up your development workspace, running tests (`uv run pytest tests/ -q`), and submitting pull requests.
+
+---
+
+## License & Attribution
+
+OpenRecall is licensed under the [GNU Affero General Public License v3.0 (AGPLv3)](LICENSE).
+
+This repository is an extensive overhaul of the original [OpenRecall codebase](https://github.com/openrecall/openrecall), copyright © original OpenRecall contributors. We gratefully acknowledge the foundational work of the original OpenRecall project.
