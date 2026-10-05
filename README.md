@@ -62,6 +62,8 @@ OpenRecall is designed and optimized with low-resource, CPU-only systems in mind
 - **4 GB RAM is a practical recommended baseline** for running the application comfortably alongside everyday desktop applications.
 - **Note**: 4 GB RAM is a practical guideline, not a hard minimum requirement or a performance guarantee. Actual resource consumption depends on operating system overhead, display resolution, capture frequency, OCR engine selection, and active workload.
 
+For detailed hardware recommendations, OCR resource guidance, tested environments, and platform support details, see the [Hardware & Compatibility Guide](docs/hardware.md).
+
 ---
 
 ## Installation & Setup
@@ -193,10 +195,12 @@ openrecall --migrate --storage-path /path/to/legacy_dir
 This repository represents the **v0.9.0 overhaul release-preparation stage** of OpenRecall.
 
 For additional documentation:
-- [DEVELOPMENT.md](DEVELOPMENT.md) — Contributor guide, codebase architecture, and testing procedures.
-- [ROADMAP.md](ROADMAP.md) — Major development phase history and project roadmap.
-- [docs/migration.md](docs/migration.md) — Guide for legacy database audit, backup, and migration.
-- [docs/encryption.md](docs/encryption.md) — Guide for running OpenRecall on encrypted storage (BitLocker, LUKS, macOS encrypted disk image).
+- **[Hardware & Compatibility Guide](docs/hardware.md)** — Recommended hardware, OCR resource guidance, tested systems, and platforms awaiting testing.
+- **[Legacy Database Migration Guide](docs/migration.md)** — Guide for legacy database audit, backup, and safe migration.
+- **[Developer Guide](DEVELOPMENT.md)** — Contributor setup, codebase architecture, testing procedures, and contribution guidelines.
+- **[Roadmap](ROADMAP.md)** — Major development phase history and project roadmap.
+- **[Encrypted Storage Guide](docs/encryption.md)** — Information and recommendations for running OpenRecall on encrypted storage.
+- **[Changelog](CHANGELOG.md)** — User-facing changes, bug fixes, and feature improvements in the v0.9.0 overhaul.
 
 ---
 
