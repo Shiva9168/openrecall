@@ -1114,13 +1114,16 @@ def capture_detail(entry_id: int):
     {% if file_exists %}
       <div class="flex items-center justify-between">
         <span class="text-xs font-semibold text-slate-500">Screenshot Preview</span>
-        <button id="toggleZoomBtn" type="button" onclick="toggleImageScale()" class="text-xs font-semibold text-indigo-600 hover:text-indigo-800 bg-white border border-slate-300 rounded px-2.5 py-1 transition-colors cursor-pointer">
-          Toggle 1:1 Scale
+        <button id="openLightboxBtn" type="button" onclick="openLightbox()" class="text-xs font-semibold text-indigo-600 hover:text-indigo-800 bg-white border border-slate-300 rounded px-2.5 py-1 transition-colors cursor-pointer flex items-center gap-1.5" aria-label="View full screen image">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"></path>
+          </svg>
+          Full Screen
         </button>
       </div>
-      <div id="imgContainer" class="bg-slate-950 rounded-xl overflow-auto p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[400px]">
+      <div id="imgContainer" onclick="openLightbox()" class="bg-slate-950 rounded-xl overflow-auto p-2 shadow-inner border border-slate-900 flex items-center justify-center min-h-[400px] cursor-pointer group hover:border-indigo-500/50 transition-colors" title="Click to view full image">
         <img id="detailImg" src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}"
-             class="max-h-[75vh] w-auto h-auto object-contain rounded mx-auto transition-all duration-150" alt="Full Resolution Screenshot">
+             class="max-h-[75vh] w-auto h-auto object-contain rounded mx-auto transition-transform duration-150 group-hover:scale-[1.003]" alt="Full Resolution Screenshot">
       </div>
     {% else %}
       <div class="bg-slate-900 rounded-xl overflow-hidden p-8 shadow-inner border border-slate-800 flex flex-col items-center justify-center min-h-[400px] text-center">
@@ -1213,6 +1216,32 @@ def capture_detail(entry_id: int):
   </div>
 </div>
 
+{% if file_exists %}
+<!-- Full Image Lightbox Overlay -->
+<div id="imageLightboxModal" class="hidden fixed inset-0 z-50 flex flex-col bg-slate-900/60 backdrop-blur-xs transition-opacity" aria-modal="true" role="dialog" aria-label="Full image viewer">
+  <!-- Compact Top Bar / Header -->
+  <div class="flex items-center justify-between px-4 py-2 bg-white/95 border-b border-slate-200/90 shrink-0 z-10 shadow-2xs">
+    <div class="flex items-center gap-2.5 min-w-0">
+      <span class="text-xs font-semibold text-slate-800 truncate" title="{{ file_name_display }}">{{ file_name_display }}</span>
+      <span class="text-[11px] text-slate-500 font-mono shrink-0">{{ entry.timestamp | timestamp_to_human_readable }}</span>
+    </div>
+    <button id="closeLightboxBtn" type="button" onclick="closeLightbox()" class="inline-flex items-center justify-center p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-md transition-colors cursor-pointer" aria-label="Close full image viewer">
+      <svg class="w-4.5 h-4.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Main Viewport Area (Maximal viewport space, reduced outer padding) -->
+  <div class="flex-1 flex items-center justify-center p-1.5 sm:p-2.5 overflow-hidden cursor-pointer" onclick="closeLightbox()">
+    <img id="lightboxImg" src="/screenshot/{{ entry.image_path or (entry.timestamp|string + '_0.webp') }}"
+         class="max-w-full max-h-full w-auto h-auto object-contain rounded-md shadow-2xl border border-slate-200/50 bg-white transition-all duration-150 select-none cursor-default"
+         onclick="event.stopPropagation()"
+         alt="Full Resolution Screenshot">
+  </div>
+</div>
+{% endif %}
+
 <script>
 function copyOcrText() {
   const el = document.getElementById('ocrTextBlock');
@@ -1232,20 +1261,34 @@ function toggleDeleteConfirm() {
   }
 }
 
-function toggleImageScale() {
-  const img = document.getElementById('detailImg');
-  const btn = document.getElementById('toggleZoomBtn');
-  if (!img) return;
-  if (img.classList.contains('max-h-[75vh]')) {
-    img.classList.remove('max-h-[75vh]', 'w-auto', 'h-auto', 'object-contain');
-    img.classList.add('max-w-none', 'w-auto');
-    if (btn) btn.innerText = 'Fit to Screen';
-  } else {
-    img.classList.remove('max-w-none', 'w-auto');
-    img.classList.add('max-h-[75vh]', 'w-auto', 'h-auto', 'object-contain');
-    if (btn) btn.innerText = 'Toggle 1:1 Scale';
+function openLightbox() {
+  const modal = document.getElementById('imageLightboxModal');
+  if (modal) {
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
   }
 }
+
+function closeLightbox() {
+  const modal = document.getElementById('imageLightboxModal');
+  if (modal) {
+    modal.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+}
+
+function toggleImageScale() {
+  openLightbox();
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    const modal = document.getElementById('imageLightboxModal');
+    if (modal && !modal.classList.contains('hidden')) {
+      closeLightbox();
+    }
+  }
+});
 </script>
 {% endblock %}
 """,
