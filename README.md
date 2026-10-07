@@ -192,7 +192,7 @@ openrecall --migrate --storage-path /path/to/legacy_dir
 
 ## Project Status & Documentation
 
-This repository represents the **v0.9.0 overhaul release-preparation stage** of OpenRecall.
+This repository represents the **v0.9.0 overhaul release** of OpenRecall.
 
 For additional documentation:
 - **[Hardware & Compatibility Guide](docs/hardware.md)** — Recommended hardware, OCR resource guidance, tested systems, and platforms awaiting testing.

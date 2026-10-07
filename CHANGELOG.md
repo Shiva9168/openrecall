@@ -12,7 +12,7 @@ The original OpenRecall authors are not affiliated with, do not maintain, and do
 
 ---
 
-## [0.9.0] — Unreleased (Upcoming Overhaul Release)
+## [0.9.0] — Overhaul Release
 
 Version 0.9.0 is a major overhaul of OpenRecall focused on local privacy, fast performance, cross-platform stability, built-in text recognition (OCR), persistent startup settings, and safe database migration.
 
