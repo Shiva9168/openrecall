@@ -73,42 +73,14 @@ RapidOCR → Tesseract → built-in fallback
 
 ## Tested Hardware & Environments
 
-The following tables list real-world environments where OpenRecall has been run and validated during development.
+For a detailed list of real-world hardware, virtual machines, and operating system environments physically tested with OpenRecall, see [TESTED_HARDWARE.md](../TESTED_HARDWARE.md).
 
-### Physical Systems Tested
+### Compatibility State
 
-| OS | Hardware | RAM | Display | Status |
-| :--- | :--- | ---: | :--- | :--- |
-| Windows 10 Pro | AMD Ryzen 5 3500 desktop | 48 GB | — | ✅ Tested |
-| Linux Mint 22 Cinnamon | Lenovo ThinkPad T540p, Intel Core i5 | 8 GB | X11 | ✅ Tested |
+- **Windows 10 x64, Windows 11 x64 (Lenovo LOQ 15), Ubuntu Wayland, Linux Mint X11**: Physically tested and validated on target configurations ([See Tested Hardware](../TESTED_HARDWARE.md)).
+- **macOS**: Code structure and packaging compatibility implemented; physical hardware testing needed and community test reports welcome.
 
-### Virtual Machines Tested
-
-| OS | Environment | Allocation | Display | Status |
-| :--- | :--- | :--- | :--- | :--- |
-| Windows 10 Home | VMware Workstation | 2 vCPU, 4 GB RAM | — | ✅ VM Tested |
-| Ubuntu 26.04 LTS | VMware Workstation | 4 vCPU, 8 GB RAM | Wayland | ✅ VM Tested |
-
-> Tested configurations are examples of systems where OpenRecall has been run and validated. They are not guarantees for every system with similar hardware.
-
----
-
-## Awaiting Testing
-
-### Windows 11
-- Testing planned.
-- Physical runtime validation has not yet been completed.
-- Update this document when physical testing is complete.
-
-### macOS
-- Not physically tested yet.
-- Community testing is welcome.
-- Contributors are encouraged to report:
-  - Mac model
-  - macOS version
-  - RAM
-  - OpenRecall / OCR behavior
-  - Any capture or startup observations
+Contributions of tested hardware configurations are welcome! See [TESTED_HARDWARE.md](../TESTED_HARDWARE.md) for submission guidelines.
 
 ---
 

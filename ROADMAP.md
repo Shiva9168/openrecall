@@ -81,3 +81,9 @@ Executed an in-depth security and privacy audit, verifying 100% offline local st
 ### Phase 19 — Release Preparation
 **Status**: Complete  
 Prepared and validated the overhauled codebase for the **v0.9.0** release, including updated developer and user documentation, packaging verification, distribution audits, and final release validation.
+
+---
+
+## Post-Overhaul Development
+
+The numbered overhaul phases (Phases 1–19) leading to **v0.9.0** are complete. Subsequent software updates, bug fixes, maintenance, and new features proceed through standard semantic releases (such as v0.9.1) rather than numbered overhaul tracking phases.

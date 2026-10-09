@@ -9,7 +9,7 @@
 
 # OpenRecall — Take Control of Your Digital Memory
 
-OpenRecall is a local, privacy-first desktop memory assistant. It captures desktop screen activity locally, analyzes text and images using built-in OCR engines, indexes screen history into a local SQLite database with full-text search (FTS5), and provides an interactive time-travel timeline and gallery grid via a local Flask Web UI.
+OpenRecall is an open-source, privacy-friendly alternative to Microsoft Recall. It captures desktop screen activity locally, analyzes text and images using built-in OCR engines, indexes screen history into a local SQLite database with full-text search (FTS5), and provides an interactive time-travel timeline and gallery grid via a local Flask Web UI. Captured data remains on your computer, with on-device processing and privacy controls that keep you in full control of your captured history.
 
 > **Project Lineage & Attribution**: This repository is an extensive, independent overhaul of the original [OpenRecall project](https://github.com/openrecall/openrecall) originally created by the OpenRecall contributors. It is released under the GNU Affero General Public License v3.0 (AGPLv3). The original OpenRecall authors are not affiliated with, do not maintain, and do not endorse this overhaul repository.
 
@@ -27,6 +27,18 @@ OpenRecall captures periodic snapshots of your desktop activity. Extracted text 
 - **Search Past Activity**: Instantly locate past documents, code snippets, web pages, or conversations using full-text search.
 - **Scrub Through Time**: Interactively navigate back through visual desktop history using a debounced timeline slider or paginated gallery grid.
 - **Control Privacy**: Pause and resume capture instantly via UI buttons or local REST API endpoints (`/api/pause`, `/api/resume`).
+
+---
+
+## Comparison
+
+| Feature | OpenRecall | Microsoft Recall |
+|---|---|---|
+| Transparency | Open-source | Closed-source |
+| Supported Hardware | [See Tested Hardware](TESTED_HARDWARE.md) | Copilot+ certified Windows hardware |
+| OS Support | Windows, macOS, Linux | Windows |
+| Privacy | On-device, self-hosted | Microsoft's privacy model |
+| Cost | Free | Included with supported Windows devices |
 
 ---
 
@@ -49,10 +61,10 @@ OpenRecall uses modular platform abstraction providers across major desktop envi
 | Platform / Display Server | Status | Details |
 | :--- | :--- | :--- |
 | **Windows 10 x64** | **Physically Validated** | Win32 GDI display capture, process title tracking via `pywin32`, Registry autostart. |
+| **Windows 11 x64** | **Physically Validated (LOQ 15)** | Win32 GDI display capture, multi-monitor support, process title tracking via `pywin32`, Registry autostart. Physically validated on Lenovo LOQ 15 hardware ([See Tested Hardware](TESTED_HARDWARE.md)). |
 | **Ubuntu Wayland** | **Physically Validated** | Native XDG Desktop Portal ScreenCast & PipeWire continuous streaming capture provider (`WaylandScreenCastCaptureProvider`), persistent session restoration tokens, XDG Autostart. Title tracking degrades gracefully under Wayland security boundaries. |
-| **Linux Mint X11** | **Physically Validated** | Multi-monitor X11 capture via `mss`, window title tracking via `xprop`, XDG Autostart. |
-| **Windows 11** | **Compatibility Reviewed** | Code & packaging compatibility reviewed; physical runtime validation not performed. |
-| **macOS (Quartz)** | **Compatibility Reviewed** | Quartz screen capture via `mss`, window tracking via `pyobjc`, LaunchAgent autostart. Code & packaging compatibility reviewed; physical runtime validation not performed. |
+| **Linux Mint X11** | **Physically Validated** | Single-monitor X11 capture via `mss`, window title tracking via `xprop`, XDG Autostart. |
+| **macOS (Quartz)** | **Testing Needed** | Quartz screen capture via `mss`, window tracking via `pyobjc`, LaunchAgent autostart. Code & packaging structure implemented; physical hardware testing needed ([See Tested Hardware](TESTED_HARDWARE.md)). |
 
 ---
 
@@ -195,7 +207,8 @@ openrecall --migrate --storage-path /path/to/legacy_dir
 This repository represents the **v0.9.0 overhaul release** of OpenRecall.
 
 For additional documentation:
-- **[Hardware & Compatibility Guide](docs/hardware.md)** — Recommended hardware, OCR resource guidance, tested systems, and platforms awaiting testing.
+- **[Tested Hardware Configurations](TESTED_HARDWARE.md)** — List of real-world hardware and OS configurations physically tested with OpenRecall.
+- **[Hardware & Compatibility Guide](docs/hardware.md)** — Recommended hardware, OCR resource guidance, technical setup, and platform details.
 - **[Legacy Database Migration Guide](docs/migration.md)** — Guide for legacy database audit, backup, and safe migration.
 - **[Developer Guide](DEVELOPMENT.md)** — Contributor setup, codebase architecture, testing procedures, and contribution guidelines.
 - **[Roadmap](ROADMAP.md)** — Major development phase history and project roadmap.
