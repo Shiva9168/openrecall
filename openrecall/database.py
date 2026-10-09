@@ -589,11 +589,19 @@ def validate_migrated_database(target_path: Optional[str] = None) -> bool:
                 words = [w for w in re.findall(r"\w+", sample.text) if len(w) >= 3]
                 if words:
                     term = words[0]
-                    results = search_entries(term, target_path=path)
-                    if not any(r.id == sample.id for r in results):
-                        raise DatabaseError(
-                            f"Validation failure: FTS search for text term '{term}' did not return record {sample.id}"
-                        )
+                    sanitized_term = sanitize_fts5_query(term)
+                    if sanitized_term:
+                        with get_db_connection(path) as conn:
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                """SELECT 1 FROM entries_fts
+                                   WHERE entries_fts MATCH ? AND rowid = ?""",
+                                (sanitized_term, sample.id),
+                            )
+                            if not cursor.fetchone():
+                                raise DatabaseError(
+                                    f"Validation failure: FTS search for text term '{term}' did not return record {sample.id}"
+                                )
 
             no_results = search_entries("nonexistent_random_xyz_term_12345", target_path=path)
             if len(no_results) != 0:

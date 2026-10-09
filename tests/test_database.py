@@ -18,8 +18,10 @@ from openrecall.database import (
     get_schema_version,
     get_timestamps,
     insert_entry,
+    migrate_legacy_database,
     sanitize_fts5_query,
     search_entries,
+    validate_migrated_database,
 )
 
 
@@ -308,6 +310,56 @@ class TestDatabasePhase1C(unittest.TestCase):
 
         # Test nonexistent ID returns None
         self.assertIsNone(get_entry_by_id(999999, target_path=self.db_path))
+
+    def test_validation_succeeds_when_sampled_record_outside_top_50_search_results(self):
+        """Regression test for v0.9.1: validate_migrated_database must succeed even if the
+        sampled record contains a common search term that yields >50 FTS matches and the
+        sampled record is ranked outside the first 50 results of search_entries().
+        """
+        temp_dir = tempfile.mkdtemp(prefix="test_validation_fts_limit_")
+        db_path = os.path.join(temp_dir, "recall.db")
+        try:
+            # Create a legacy v1 database with 60 records sharing the term 'OpenRecall'
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """CREATE TABLE entries (
+                           id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           app TEXT,
+                           title TEXT,
+                           text TEXT,
+                           timestamp INTEGER UNIQUE,
+                           embedding BLOB
+                       )"""
+                )
+                cursor.execute("PRAGMA user_version = 1")
+                # Insert 59 records with high term frequency for 'OpenRecall'
+                for i in range(1, 60):
+                    cursor.execute(
+                        "INSERT INTO entries (app, title, text, timestamp) VALUES (?, ?, ?, ?)",
+                        ("TestApp", "TestTitle", "OpenRecall " * 10, i * 100),
+                    )
+                # Insert 60th record (newest timestamp) with single occurrence of 'OpenRecall' + padding
+                cursor.execute(
+                    "INSERT INTO entries (app, title, text, timestamp) VALUES (?, ?, ?, ?)",
+                    ("TestApp", "TestTitle", "OpenRecall " + ("padding " * 50), 6000),
+                )
+                conn.commit()
+
+            # Execute migration which includes validate_migrated_database()
+            migrated_path = migrate_legacy_database(db_path)
+            self.assertEqual(get_schema_version(migrated_path), 3)
+
+            # Verify that search_entries('OpenRecall') truncates at 50 and omits record 60
+            top_50_results = search_entries("OpenRecall", target_path=migrated_path)
+            self.assertEqual(len(top_50_results), 50)
+            self.assertNotIn(60, [r.id for r in top_50_results])
+
+            # Explicitly verify validate_migrated_database passes cleanly on this database
+            self.assertTrue(validate_migrated_database(migrated_path))
+
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
