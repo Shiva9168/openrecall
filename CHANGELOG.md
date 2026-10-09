@@ -12,6 +12,18 @@ The original OpenRecall authors are not affiliated with, do not maintain, and do
 
 ---
 
+## [0.9.1] — Bug Fix Release
+
+Version 0.9.1 is a targeted bug-fix release addressing a database migration validation false positive.
+
+### Migration Validation Fix
+- **FTS Search Validation Fix**: Resolved a false-positive migration validation error (`DatabaseError: Validation failure: FTS search for text term...`) that occurred during legacy database migration (`openrecall --migrate`) on databases where a sampled search term occurred in more than 50 records.
+- **Direct Index Membership Check**: Updated `validate_migrated_database()` to query `entries_fts` directly using `WHERE entries_fts MATCH ? AND rowid = ?` for the sampled record rather than relying on the paginated `search_entries()` query (which is subject to `LIMIT 50` rank truncation).
+- **Preserved Search Pagination**: Preserved standard `search_entries()` `LIMIT 50` pagination behavior for normal application search queries.
+- **Regression Coverage**: Added automated unit test coverage in `tests/test_database.py` verifying successful migration validation on databases with $> 50$ keyword occurrences.
+
+---
+
 ## [0.9.0] — Overhaul Release
 
 Version 0.9.0 is a major overhaul of OpenRecall focused on local privacy, fast performance, cross-platform stability, built-in text recognition (OCR), persistent startup settings, and safe database migration.
